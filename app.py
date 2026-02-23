@@ -96,34 +96,55 @@ async def receive(request: Request):
         messages = value.get("messages")
 
         if not messages:
-            print("No messages found in webhook payload.")
             return {"status": "no message"}
 
         message = messages[0]
         phone = message.get("from")
         msg_type = message.get("type")
 
-        print("MESSAGE TYPE:", msg_type)
+        convo_ref = db.collection("conversations").document(phone)
+        convo = convo_ref.get().to_dict() or {}
 
-        # 🔹 First message (text)
+        # =====================
+        # TEXT INPUT HANDLING
+        # =====================
         if msg_type == "text":
-            send_category_buttons(phone)
+            text = message["text"]["body"]
 
-        # 🔹 Button clicks
+            if convo.get("step") == "waiting_room":
+                convo_ref.set({"room": text, "step": "waiting_description"}, merge=True)
+                send_text(phone, "Describe the issue:")
+                return {"status": "ok"}
+
+            elif convo.get("step") == "waiting_description":
+                convo_ref.set({"description": text, "step": "waiting_urgency"}, merge=True)
+                send_urgency_buttons(phone)
+                return {"status": "ok"}
+
+            else:
+                send_category_buttons(phone)
+                return {"status": "ok"}
+
+        # =====================
+        # BUTTON HANDLING
+        # =====================
         elif msg_type == "interactive":
             selected = message["interactive"]["button_reply"]["id"]
-            print("BUTTON CLICKED:", selected)
 
             if selected == "electrical":
-                save_temp(phone, {"category": "Electrical"})
+                convo_ref.set({"category": "Electrical"}, merge=True)
                 send_appliance_buttons(phone)
 
             elif selected in ["ac", "geyser", "washing"]:
-                save_temp(phone, {"subcategory": selected})
+                convo_ref.set({
+                    "subcategory": selected,
+                    "step": "waiting_room"
+                }, merge=True)
                 send_text(phone, "Enter Room Number:")
 
             elif selected in ["low", "medium", "high"]:
                 complete_ticket(phone, selected)
+                convo_ref.delete()
 
     except Exception as e:
         print("ERROR:", e)
@@ -174,6 +195,24 @@ def send_appliance_buttons(phone):
     }
     send_whatsapp(data)
 
+def send_urgency_buttons(phone):
+    data = {
+        "messaging_product": "whatsapp",
+        "to": phone,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": "Select Urgency"},
+            "action": {
+                "buttons": [
+                    {"type": "reply", "reply": {"id": "low", "title": "Low"}},
+                    {"type": "reply", "reply": {"id": "medium", "title": "Medium"}},
+                    {"type": "reply", "reply": {"id": "high", "title": "High"}}
+                ]
+            }
+        }
+    }
+    send_whatsapp(data)
 
 def send_text(phone, text):
     data = {
@@ -203,7 +242,8 @@ def save_temp(phone, data):
 
 
 def complete_ticket(phone, urgency):
-    convo = db.collection("conversations").document(phone).get().to_dict()
+    convo_ref = db.collection("conversations").document(phone)
+    convo = convo_ref.get().to_dict()
 
     ticket_id = str(uuid.uuid4())[:8]
 
@@ -211,10 +251,12 @@ def complete_ticket(phone, urgency):
         "phone": phone,
         "category": convo.get("category"),
         "subcategory": convo.get("subcategory"),
-        "room": "Pending",
-        "description": "Pending",
+        "room": convo.get("room"),
+        "description": convo.get("description"),
         "urgency": urgency,
         "status": "Open"
     })
 
     send_text(phone, f"Ticket {ticket_id} created successfully!")
+
+    convo_ref.delete()
