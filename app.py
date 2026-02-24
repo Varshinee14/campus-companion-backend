@@ -80,6 +80,7 @@ def verify(request: Request):
 @app.post("/webhook")
 async def receive(request: Request):
     body = await request.json()
+    print("FULL BODY:", body)
 
     try:
         entry = body["entry"][0]
@@ -280,10 +281,17 @@ def send_text(phone, text):
     }
     send_whatsapp(data)
 
+    
 def send_whatsapp(data):
+    print("SENDING TO WHATSAPP:", data)
+
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {ACCESS_TOKEN}",
         "Content-Type": "application/json"
     }
-    requests.post(url, headers=headers, json=data)
+
+    response = requests.post(url, headers=headers, json=data)
+
+    print("WHATSAPP STATUS:", response.status_code)
+    print("WHATSAPP RESPONSE:", response.text)
