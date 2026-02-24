@@ -9,7 +9,7 @@ import uuid
 
 app = FastAPI()
 
-# 🔐 Firebase
+# ================= FIREBASE =================
 firebase_key = json.loads(os.environ["FIREBASE_KEY"])
 
 if not firebase_admin._apps:
@@ -83,7 +83,6 @@ async def receive(request: Request):
         if msg_type == "text":
             text = message["text"]["body"].strip().lower()
 
-            # Always reset
             if text in ["hi", "hello", "menu"]:
                 convo_ref.delete()
                 send_main_menu(phone)
@@ -91,12 +90,12 @@ async def receive(request: Request):
 
             if convo.get("step") == "waiting_room":
                 convo_ref.set({"room": text, "step": "waiting_roll"}, merge=True)
-                send_text(phone, "Enter Roll Number:")
+                send_text(phone, "Enter Roll No:")
                 return {"status": "ok"}
 
             elif convo.get("step") == "waiting_roll":
                 convo_ref.set({"roll_number": text, "step": "waiting_description"}, merge=True)
-                send_text(phone, "Briefly describe the issue:")
+                send_text(phone, "Describe issue briefly:")
                 return {"status": "ok"}
 
             elif convo.get("step") == "waiting_description":
@@ -116,42 +115,36 @@ async def receive(request: Request):
         elif msg_type == "interactive":
             selected = message["interactive"]["button_reply"]["id"]
 
-            # BACK TO MAIN
             if selected == "back_main":
                 convo_ref.delete()
                 send_main_menu(phone)
                 return {"status": "ok"}
 
-            # BACK TO BUCKET
             if selected == "back_bucket":
                 send_bucket_buttons(phone)
                 return {"status": "ok"}
 
-            # MAIN
             if selected == "raise":
                 send_bucket_buttons(phone)
 
             elif selected == "enquire":
                 convo_ref.set({"step": "waiting_ticket_lookup"}, merge=True)
-                send_text(phone, "Enter your Ticket ID:")
+                send_text(phone, "Enter Ticket ID:")
 
-            # LEVEL 1
             elif selected == "hostel":
                 convo_ref.set({"bucket": "Hostel"}, merge=True)
                 send_hostel_main(phone)
 
-            elif selected == "academics_facilities":
-                convo_ref.set({"bucket": "Academics & Facilities"}, merge=True)
-                send_academics_facilities(phone)
+            elif selected == "acad_fac":
+                convo_ref.set({"bucket": "Acad & Fac"}, merge=True)
+                send_acad_fac(phone)
 
-            # HOSTEL LEVEL 2
             elif selected == "electrical":
                 send_electrical_options(phone)
 
             elif selected == "utilities":
                 send_utilities_options(phone)
 
-            # ACADEMICS LEVEL 2
             elif selected == "infra":
                 send_infra_options(phone)
 
@@ -161,16 +154,15 @@ async def receive(request: Request):
             elif selected == "recreation":
                 send_recreation_options(phone)
 
-            # FINAL CATEGORY SELECTION
             elif selected in [
-                "ac", "geyser", "washing_machine",
-                "wifi", "water_dispenser", "cleaning",
-                "it_help", "room_booking",
+                "ac", "geyser", "wash_mach",
+                "wifi", "water_disp", "cleaning",
+                "it_help", "room_book",
                 "gym", "terrace", "yoga",
-                "food_quality", "mess_hygiene"
+                "food_qual", "mess_hyg"
             ]:
                 convo_ref.set({"category": selected, "step": "waiting_room"}, merge=True)
-                send_text(phone, "Enter Room Number:")
+                send_text(phone, "Enter Room No:")
 
             elif selected in ["high", "medium", "low"]:
                 complete_ticket(phone, selected)
@@ -187,64 +179,64 @@ async def receive(request: Request):
 
 # ================= MENUS =================
 def send_main_menu(phone):
-    send_buttons(phone, "Choose an option:", [
+    send_buttons(phone, "Choose option:", [
         ("raise", "Raise Complaint"),
         ("enquire", "Enquire Ticket")
     ])
 
 def send_bucket_buttons(phone):
-    send_buttons(phone, "Select Complaint Category:", [
+    send_buttons(phone, "Select Category:", [
         ("hostel", "Hostel"),
-        ("academics_facilities", "Academics & Facilities"),
+        ("acad_fac", "Acad & Facilities"),
         ("back_main", "⬅ Back")
     ])
 
 def send_hostel_main(phone):
-    send_buttons(phone, "Select Hostel Category:", [
+    send_buttons(phone, "Hostel Category:", [
         ("electrical", "Electrical"),
         ("utilities", "Utilities"),
         ("back_bucket", "⬅ Back")
     ])
 
 def send_electrical_options(phone):
-    send_buttons(phone, "Select Electrical Issue:", [
+    send_buttons(phone, "Electrical Issue:", [
         ("ac", "AC"),
         ("geyser", "Geyser"),
-        ("washing_machine", "Washing Machine")
+        ("wash_mach", "Washing Mach.")
     ])
 
 def send_utilities_options(phone):
-    send_buttons(phone, "Select Utility Issue:", [
+    send_buttons(phone, "Utility Issue:", [
         ("wifi", "WiFi"),
-        ("water_dispenser", "Water Dispenser"),
+        ("water_disp", "Water Disp."),
         ("cleaning", "Cleaning")
     ])
 
-def send_academics_facilities(phone):
-    send_buttons(phone, "Select Category:", [
+def send_acad_fac(phone):
+    send_buttons(phone, "Select Type:", [
         ("infra", "Infra Issues"),
         ("mess", "Mess Issues"),
         ("back_bucket", "⬅ Back")
     ])
 
 def send_infra_options(phone):
-    send_buttons(phone, "Select Infra Issue:", [
+    send_buttons(phone, "Infra Issue:", [
         ("it_help", "IT Help"),
-        ("room_booking", "Room Booking"),
-        ("recreation", "Recreation Centre")
+        ("room_book", "Room Booking"),
+        ("recreation", "Recreation")
     ])
 
 def send_recreation_options(phone):
-    send_buttons(phone, "Select Recreation Option:", [
+    send_buttons(phone, "Recreation:", [
         ("gym", "Gym"),
         ("terrace", "Terrace"),
         ("yoga", "Yoga Room")
     ])
 
 def send_mess_options(phone):
-    send_buttons(phone, "Select Mess Issue:", [
-        ("food_quality", "Food Quality"),
-        ("mess_hygiene", "Hygiene"),
+    send_buttons(phone, "Mess Issue:", [
+        ("food_qual", "Food Quality"),
+        ("mess_hyg", "Hygiene"),
         ("back_bucket", "⬅ Back")
     ])
 
@@ -294,9 +286,9 @@ def complete_ticket(phone, priority):
 
     send_buttons(
         phone,
-        f"✅ Ticket {ticket_id} created!\nRaise another complaint?",
+        f"Ticket {ticket_id} created!\nRaise again?",
         [
-            ("raise", "Raise Another"),
+            ("raise", "Raise Again"),
             ("stop", "Stop"),
             ("back_main", "⬅ Menu")
         ]
@@ -326,15 +318,12 @@ def send_text(phone, text):
     send_whatsapp(data)
 
 def send_whatsapp(data):
-    print("SENDING TO WHATSAPP:", data)
-
+    print("SENDING:", data)
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {ACCESS_TOKEN}",
         "Content-Type": "application/json"
     }
-
     response = requests.post(url, headers=headers, json=data)
-
-    print("WHATSAPP STATUS:", response.status_code)
-    print("WHATSAPP RESPONSE:", response.text)
+    print("STATUS:", response.status_code)
+    print("RESPONSE:", response.text)
