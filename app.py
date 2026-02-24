@@ -6,6 +6,7 @@ import os
 import json
 import requests
 import uuid
+from datetime import datetime
 
 app = FastAPI()
 
@@ -25,29 +26,64 @@ ACCESS_TOKEN = os.environ["WHATSAPP_TOKEN"]
 # ================= DASHBOARD =================
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
-    tickets = list(db.collection("tickets").stream())
+    tickets = (
+        db.collection("tickets")
+        .order_by("created_at", direction=firestore.Query.DESCENDING)
+        .stream()
+    )
 
     html = "<h1>🏫 Campus Companion Admin</h1><hr>"
 
-    if len(tickets) == 0:
+    tickets_list = list(tickets)
+
+    if len(tickets_list) == 0:
         html += "<h3>No tickets found.</h3>"
     else:
-        for ticket in tickets:
+        for ticket in tickets_list:
             data = ticket.to_dict()
             html += f"""
             <div style='border:1px solid #ccc;padding:10px;margin-bottom:10px'>
                 <b>ID:</b> {ticket.id}<br>
-                <b>Bucket:</b> {data.get('bucket')}<br>
-                <b>Category:</b> {data.get('category')}<br>
-                <b>Room:</b> {data.get('room')}<br>
-                <b>Roll:</b> {data.get('roll_number')}<br>
-                <b>Description:</b> {data.get('description')}<br>
-                <b>Priority:</b> {data.get('priority')}<br>
-                <b>Status:</b> {data.get('status')}<br>
+                <b>Bucket:</b> {data.get('bucket', '')}<br>
+                <b>Category:</b> {data.get('category', '')}<br>
+                <b>Room:</b> {data.get('room', '')}<br>
+                <b>Roll:</b> {data.get('roll_number', '')}<br>
+                <b>Description:</b> {data.get('description', '')}<br>
+                <b>Priority:</b> {data.get('priority', '')}<br>
+                <b>Status:</b> {data.get('status', 'Open')}<br>
+                <b>Assigned To:</b> {data.get('assigned_to', '')}<br>
             </div>
             """
 
     return html
+
+# ================= JSON API FOR UI =================
+@app.get("/tickets")
+def get_tickets():
+    tickets = (
+        db.collection("tickets")
+        .order_by("created_at", direction=firestore.Query.DESCENDING)
+        .stream()
+    )
+
+    result = []
+
+    for ticket in tickets:
+        data = ticket.to_dict()
+        result.append({
+            "id": ticket.id,
+            "bucket": data.get("bucket", ""),
+            "category": data.get("category", ""),
+            "room": data.get("room", ""),
+            "roll_number": data.get("roll_number", ""),
+            "description": data.get("description", ""),
+            "priority": data.get("priority", ""),
+            "status": data.get("status", "Open"),
+            "assigned_to": data.get("assigned_to", ""),
+            "created_at": data.get("created_at")
+        })
+
+    return result
 
 # ================= WEBHOOK VERIFY =================
 @app.get("/webhook")
@@ -187,7 +223,7 @@ def send_main_menu(phone):
 def send_bucket_buttons(phone):
     send_buttons(phone, "Select Category:", [
         ("hostel", "Hostel"),
-        ("acad_fac", "Acad & Facilities"),
+        ("acad_fac", "Acad & Fac"),
         ("back_main", "⬅ Back")
     ])
 
@@ -202,13 +238,13 @@ def send_electrical_options(phone):
     send_buttons(phone, "Electrical Issue:", [
         ("ac", "AC"),
         ("geyser", "Geyser"),
-        ("wash_mach", "Washing Mach.")
+        ("wash_mach", "Wash Mach")
     ])
 
 def send_utilities_options(phone):
     send_buttons(phone, "Utility Issue:", [
         ("wifi", "WiFi"),
-        ("water_disp", "Water Disp."),
+        ("water_disp", "Water Disp"),
         ("cleaning", "Cleaning")
     ])
 
@@ -270,8 +306,6 @@ def complete_ticket(phone, priority):
     convo = db.collection("conversations").document(phone).get().to_dict()
     ticket_id = str(uuid.uuid4())[:8]
 
-    sla_map = {"high": 2, "medium": 6, "low": 24}
-
     db.collection("tickets").document(ticket_id).set({
         "phone": phone,
         "bucket": convo.get("bucket"),
@@ -280,8 +314,9 @@ def complete_ticket(phone, priority):
         "roll_number": convo.get("roll_number"),
         "description": convo.get("description"),
         "priority": priority,
-        "sla_hours": sla_map[priority],
-        "status": "Open"
+        "status": "Open",
+        "assigned_to": "",
+        "created_at": datetime.utcnow()
     })
 
     send_buttons(
@@ -304,7 +339,7 @@ def fetch_ticket_status(phone, ticket_id):
     data = doc.to_dict()
     send_text(
         phone,
-        f"Status: {data.get('status')}\nPriority: {data.get('priority')}\nSLA: {data.get('sla_hours')} hrs"
+        f"Status: {data.get('status')}\nPriority: {data.get('priority')}"
     )
 
 # ================= WHATSAPP =================
