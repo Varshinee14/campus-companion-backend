@@ -99,7 +99,13 @@ async def receive(request: Request):
 
         # ================= TEXT =================
         if msg_type == "text":
-            text = message["text"]["body"]
+            text = message["text"]["body"].strip().lower()
+
+            # 🔁 Allow restart anytime
+            if text in ["hi", "hello", "menu"]:
+                convo_ref.delete()
+                send_main_menu(phone)
+                return {"status": "ok"}
 
             if convo.get("step") == "waiting_room":
                 convo_ref.set({"room": text, "step": "waiting_roll"}, merge=True)
