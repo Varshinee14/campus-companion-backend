@@ -9,7 +9,17 @@ import requests
 import uuid
 from datetime import datetime
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Later restrict to your UI domain
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ================= FIREBASE =================
 firebase_key = json.loads(os.environ["FIREBASE_KEY"])
