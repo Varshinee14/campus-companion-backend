@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -9,13 +10,12 @@ import requests
 import uuid
 from datetime import datetime
 
-from fastapi.middleware.cors import CORSMiddleware
-
 app = FastAPI()
 
+# ================= CORS =================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Later restrict to your UI domain
+    allow_origins=["*"],  # Restrict later to your admin UI domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -33,40 +33,6 @@ db = firestore.client()
 VERIFY_TOKEN = "campusbot"
 PHONE_NUMBER_ID = "946946368512302"
 ACCESS_TOKEN = os.environ["WHATSAPP_TOKEN"]
-
-# ================= DASHBOARD =================
-@app.get("/", response_class=HTMLResponse)
-def dashboard():
-    tickets = (
-        db.collection("tickets")
-        .order_by("created_at", direction=firestore.Query.DESCENDING)
-        .stream()
-    )
-
-    html = "<h1>🏫 Campus Companion Admin</h1><hr>"
-
-    tickets_list = list(tickets)
-
-    if len(tickets_list) == 0:
-        html += "<h3>No tickets found.</h3>"
-    else:
-        for ticket in tickets_list:
-            data = ticket.to_dict()
-            html += f"""
-            <div style='border:1px solid #ccc;padding:10px;margin-bottom:10px'>
-                <b>ID:</b> {ticket.id}<br>
-                <b>Bucket:</b> {data.get('bucket', '')}<br>
-                <b>Category:</b> {data.get('category', '')}<br>
-                <b>Room:</b> {data.get('room', '')}<br>
-                <b>Roll:</b> {data.get('roll_number', '')}<br>
-                <b>Description:</b> {data.get('description', '')}<br>
-                <b>Priority:</b> {data.get('priority', '')}<br>
-                <b>Status:</b> {data.get('status', 'Open')}<br>
-                <b>Assigned To:</b> {data.get('assigned_to', '')}<br>
-            </div>
-            """
-
-    return html
 
 # ================= JSON API FOR ADMIN UI =================
 @app.get("/tickets")
@@ -97,7 +63,8 @@ def get_tickets():
 
     return result
 
-# ================= UPDATE TICKET (NEW) =================
+
+# ================= UPDATE TICKET =================
 class TicketUpdate(BaseModel):
     ticket_id: str
     status: str | None = None
@@ -106,7 +73,6 @@ class TicketUpdate(BaseModel):
 
 @app.put("/update-ticket")
 def update_ticket(data: TicketUpdate):
-
     ticket_ref = db.collection("tickets").document(data.ticket_id)
 
     update_data = {}
@@ -126,6 +92,7 @@ def update_ticket(data: TicketUpdate):
         "updated_fields": update_data
     }
 
+
 # ================= WEBHOOK VERIFY =================
 @app.get("/webhook")
 def verify(request: Request):
@@ -134,7 +101,8 @@ def verify(request: Request):
         return PlainTextResponse(params.get("hub.challenge"))
     return PlainTextResponse("Verification failed", status_code=403)
 
-# ================= RECEIVE =================
+
+# ================= RECEIVE WHATSAPP =================
 @app.post("/webhook")
 async def receive(request: Request):
     body = await request.json()
@@ -192,6 +160,25 @@ async def receive(request: Request):
         elif msg_type == "interactive":
             selected = message["interactive"]["button_reply"]["id"]
 
+            # ---- GLOBAL BACK HANDLERS ----
+            if selected == "back_main":
+                convo_ref.delete()
+                send_main_menu(phone)
+                return {"status": "ok"}
+
+            if selected == "back_bucket":
+                send_bucket_buttons(phone)
+                return {"status": "ok"}
+
+            if selected == "back_hostel":
+                send_hostel_main(phone)
+                return {"status": "ok"}
+
+            if selected == "back_acad":
+                send_acad_fac(phone)
+                return {"status": "ok"}
+
+            # ---- MAIN FLOW ----
             if selected == "raise":
                 send_bucket_buttons(phone)
 
@@ -203,7 +190,18 @@ async def receive(request: Request):
                 convo_ref.set({"bucket": "Hostel"}, merge=True)
                 send_hostel_main(phone)
 
-            elif selected in ["ac", "geyser", "wash_mach"]:
+            elif selected == "acad_fac":
+                convo_ref.set({"bucket": "Acad & Fac"}, merge=True)
+                send_acad_fac(phone)
+
+            elif selected == "electrical":
+                send_electrical_options(phone)
+
+            elif selected == "utilities":
+                send_utilities_options(phone)
+
+            elif selected in ["ac", "geyser", "wash_mach",
+                              "wifi", "water_disp", "cleaning"]:
                 convo_ref.set({"category": selected, "step": "waiting_room"}, merge=True)
                 send_text(phone, "Enter Room No:")
 
@@ -216,6 +214,7 @@ async def receive(request: Request):
 
     return {"status": "ok"}
 
+
 # ================= MENUS =================
 def send_main_menu(phone):
     send_buttons(phone, "Choose option:", [
@@ -223,26 +222,54 @@ def send_main_menu(phone):
         ("enquire", "Enquire Ticket")
     ])
 
+
 def send_bucket_buttons(phone):
     send_buttons(phone, "Select Category:", [
         ("hostel", "Hostel"),
         ("acad_fac", "Acad & Fac"),
-        ("mess", "Mess")
+        ("back_main", "⬅ Main Menu")
     ])
+
 
 def send_hostel_main(phone):
     send_buttons(phone, "Hostel Category:", [
+        ("electrical", "Electrical"),
+        ("utilities", "Utilities"),
+        ("back_bucket", "⬅ Back")
+    ])
+
+
+def send_electrical_options(phone):
+    send_buttons(phone, "Electrical Issue:", [
         ("ac", "AC"),
         ("geyser", "Geyser"),
-        ("wash_mach", "Wash Mach")
+        ("back_hostel", "⬅ Back")
     ])
+
+
+def send_utilities_options(phone):
+    send_buttons(phone, "Utility Issue:", [
+        ("wifi", "WiFi"),
+        ("water_disp", "Water Disp"),
+        ("back_hostel", "⬅ Back")
+    ])
+
+
+def send_acad_fac(phone):
+    send_buttons(phone, "Select Type:", [
+        ("infra", "Infra Issues"),
+        ("mess", "Mess Issues"),
+        ("back_bucket", "⬅ Back")
+    ])
+
 
 def send_priority_buttons(phone):
     send_buttons(phone, "Select Priority:", [
         ("high", "High"),
         ("medium", "Medium"),
-        ("low", "Low")
+        ("back_main", "⬅ Cancel")
     ])
+
 
 def send_buttons(phone, text, buttons):
     data = {
@@ -261,6 +288,7 @@ def send_buttons(phone, text, buttons):
         }
     }
     send_whatsapp(data)
+
 
 # ================= TICKET CREATION =================
 def complete_ticket(phone, priority):
@@ -283,6 +311,7 @@ def complete_ticket(phone, priority):
 
     send_text(phone, f"Ticket {ticket_id} created successfully!")
 
+
 def fetch_ticket_status(phone, ticket_id):
     doc = db.collection("tickets").document(ticket_id).get()
 
@@ -293,6 +322,7 @@ def fetch_ticket_status(phone, ticket_id):
     data = doc.to_dict()
     send_text(phone, f"Status: {data.get('status')}")
 
+
 # ================= WHATSAPP =================
 def send_text(phone, text):
     data = {
@@ -302,6 +332,7 @@ def send_text(phone, text):
         "text": {"body": text}
     }
     send_whatsapp(data)
+
 
 def send_whatsapp(data):
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
