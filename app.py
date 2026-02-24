@@ -362,3 +362,4 @@ def send_whatsapp(data):
     response = requests.post(url, headers=headers, json=data)
     print("STATUS:", response.status_code)
     print("RESPONSE:", response.text)
+    print("TOKEN STARTS WITH:", ACCESS_TOKEN[:10]) #for testing purpose log is added here, will be removed
