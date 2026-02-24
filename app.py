@@ -22,7 +22,6 @@ VERIFY_TOKEN = "campusbot"
 PHONE_NUMBER_ID = "946946368512302"
 ACCESS_TOKEN = os.environ["WHATSAPP_TOKEN"]
 
-
 # =========================
 # 🔹 ADMIN DASHBOARD
 # =========================
@@ -52,20 +51,18 @@ def dashboard():
             html += f"""
             <div class="ticket">
                 <b>Ticket ID:</b> {ticket.id}<br>
-                <b>Phone:</b> {data.get('phone')}<br>
+                <b>Bucket:</b> {data.get('bucket')}<br>
                 <b>Category:</b> {data.get('category')}<br>
-                <b>Subcategory:</b> {data.get('subcategory')}<br>
                 <b>Room:</b> {data.get('room')}<br>
+                <b>Roll:</b> {data.get('roll_number')}<br>
                 <b>Description:</b> {data.get('description')}<br>
-                <b>Urgency:</b> {data.get('urgency')}<br>
+                <b>Priority:</b> {data.get('priority')}<br>
                 <b>Status:</b> {data.get('status')}<br>
             </div>
             """
 
     html += "</body></html>"
-
     return html
-
 
 # =========================
 # 🔹 WEBHOOK VERIFICATION
@@ -73,13 +70,9 @@ def dashboard():
 @app.get("/webhook")
 def verify(request: Request):
     params = request.query_params
-    print("VERIFY PARAMS:", params)
-
     if params.get("hub.verify_token") == VERIFY_TOKEN:
         return PlainTextResponse(params.get("hub.challenge"))
-
     return PlainTextResponse("Verification failed", status_code=403)
-
 
 # =========================
 # 🔹 RECEIVE MESSAGES
@@ -87,62 +80,88 @@ def verify(request: Request):
 @app.post("/webhook")
 async def receive(request: Request):
     body = await request.json()
-    print("FULL BODY:", body)
 
     try:
-        entry = body.get("entry", [])[0]
-        changes = entry.get("changes", [])[0]
-        value = changes.get("value", {})
+        entry = body["entry"][0]
+        changes = entry["changes"][0]
+        value = changes["value"]
         messages = value.get("messages")
 
         if not messages:
             return {"status": "no message"}
 
         message = messages[0]
-        phone = message.get("from")
-        msg_type = message.get("type")
+        phone = message["from"]
+        msg_type = message["type"]
 
         convo_ref = db.collection("conversations").document(phone)
         convo = convo_ref.get().to_dict() or {}
 
-        # =====================
-        # TEXT INPUT HANDLING
-        # =====================
+        # ================= TEXT =================
         if msg_type == "text":
             text = message["text"]["body"]
 
             if convo.get("step") == "waiting_room":
-                convo_ref.set({"room": text, "step": "waiting_description"}, merge=True)
-                send_text(phone, "Describe the issue:")
+                convo_ref.set({"room": text, "step": "waiting_roll"}, merge=True)
+                send_text(phone, "Enter Roll Number:")
+                return {"status": "ok"}
+
+            elif convo.get("step") == "waiting_roll":
+                convo_ref.set({"roll_number": text, "step": "waiting_description"}, merge=True)
+                send_text(phone, "Briefly describe the issue:")
                 return {"status": "ok"}
 
             elif convo.get("step") == "waiting_description":
-                convo_ref.set({"description": text, "step": "waiting_urgency"}, merge=True)
-                send_urgency_buttons(phone)
+                convo_ref.set({"description": text, "step": "waiting_priority"}, merge=True)
+                send_priority_buttons(phone)
+                return {"status": "ok"}
+
+            elif convo.get("step") == "waiting_ticket_lookup":
+                fetch_ticket_status(phone, text)
                 return {"status": "ok"}
 
             else:
-                send_category_buttons(phone)
+                send_main_menu(phone)
                 return {"status": "ok"}
 
-        # =====================
-        # BUTTON HANDLING
-        # =====================
+        # ================= BUTTONS =================
         elif msg_type == "interactive":
             selected = message["interactive"]["button_reply"]["id"]
 
-            if selected == "electrical":
-                convo_ref.set({"category": "Electrical"}, merge=True)
-                send_appliance_buttons(phone)
+            if selected == "raise":
+                send_bucket_buttons(phone)
 
-            elif selected in ["ac", "geyser", "washing"]:
-                convo_ref.set({
-                    "subcategory": selected,
-                    "step": "waiting_room"
-                }, merge=True)
+            elif selected == "enquire":
+                convo_ref.set({"step": "waiting_ticket_lookup"}, merge=True)
+                send_text(phone, "Enter your Ticket ID:")
+
+            elif selected in ["academic", "hostel", "mess"]:
+                convo_ref.set({"bucket": selected}, merge=True)
+
+                if selected == "hostel":
+                    send_hostel_options(phone)
+                elif selected == "mess":
+                    convo_ref.set({"category": "Food Quality", "step": "waiting_room"}, merge=True)
+                    send_text(phone, "Enter Room Number:")
+                elif selected == "academic":
+                    send_academic_options(phone)
+
+            elif selected in ["ac", "wifi", "water_dispenser", "geyser", "washing_machine", "fridge", "oven", "cleaning"]:
+                convo_ref.set({"category": selected, "step": "waiting_room"}, merge=True)
                 send_text(phone, "Enter Room Number:")
 
-            elif selected in ["low", "medium", "high"]:
+            elif selected in ["it_help", "room_booking", "recreation"]:
+                if selected == "recreation":
+                    send_recreation_options(phone)
+                else:
+                    convo_ref.set({"category": selected, "step": "waiting_roll"}, merge=True)
+                    send_text(phone, "Enter Roll Number:")
+
+            elif selected in ["gym", "terrace", "yoga"]:
+                convo_ref.set({"category": selected, "step": "waiting_roll"}, merge=True)
+                send_text(phone, "Enter Roll Number:")
+
+            elif selected in ["high", "medium", "low"]:
                 complete_ticket(phone, selected)
                 convo_ref.delete()
 
@@ -151,69 +170,107 @@ async def receive(request: Request):
 
     return {"status": "ok"}
 
+# =========================
+# 🔹 MENU FUNCTIONS
+# =========================
+def send_main_menu(phone):
+    send_buttons(phone, "Choose an option:", [
+        ("raise", "Raise Complaint"),
+        ("enquire", "Enquire Ticket")
+    ])
+
+def send_bucket_buttons(phone):
+    send_buttons(phone, "Select Bucket:", [
+        ("academic", "Academic"),
+        ("hostel", "Hostel"),
+        ("mess", "Mess")
+    ])
+
+def send_hostel_options(phone):
+    send_buttons(phone, "Select Hostel Issue:", [
+        ("ac", "AC"),
+        ("wifi", "WiFi"),
+        ("water_dispenser", "Water Dispenser")
+    ])
+
+def send_academic_options(phone):
+    send_buttons(phone, "Select Academic Issue:", [
+        ("it_help", "IT Help"),
+        ("room_booking", "Room Booking"),
+        ("recreation", "Recreation Centre")
+    ])
+
+def send_recreation_options(phone):
+    send_buttons(phone, "Select Recreation Option:", [
+        ("gym", "Gym"),
+        ("terrace", "Terrace"),
+        ("yoga", "Yoga Room")
+    ])
+
+def send_priority_buttons(phone):
+    send_buttons(phone, "Select Priority:", [
+        ("high", "High"),
+        ("medium", "Medium"),
+        ("low", "Low")
+    ])
+
+def send_buttons(phone, text, buttons):
+    data = {
+        "messaging_product": "whatsapp",
+        "to": phone,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": text},
+            "action": {
+                "buttons": [
+                    {"type": "reply", "reply": {"id": b[0], "title": b[1]}}
+                    for b in buttons
+                ]
+            }
+        }
+    }
+    send_whatsapp(data)
 
 # =========================
-# 🔹 WHATSAPP HELPERS
+# 🔹 TICKET FUNCTIONS
 # =========================
+def complete_ticket(phone, priority):
+    convo = db.collection("conversations").document(phone).get().to_dict()
+    ticket_id = str(uuid.uuid4())[:8]
 
-def send_category_buttons(phone):
-    data = {
-        "messaging_product": "whatsapp",
-        "to": phone,
-        "type": "interactive",
-        "interactive": {
-            "type": "button",
-            "body": {"text": "Select Category"},
-            "action": {
-                "buttons": [
-                    {"type": "reply", "reply": {"id": "electrical", "title": "Electrical"}},
-                    {"type": "reply", "reply": {"id": "hygiene", "title": "Hygiene"}},
-                    {"type": "reply", "reply": {"id": "food", "title": "Food"}}
-                ]
-            }
-        }
-    }
-    send_whatsapp(data)
+    sla_map = {"high": 2, "medium": 6, "low": 24}
 
+    db.collection("tickets").document(ticket_id).set({
+        "phone": phone,
+        "bucket": convo.get("bucket"),
+        "category": convo.get("category"),
+        "room": convo.get("room"),
+        "roll_number": convo.get("roll_number"),
+        "description": convo.get("description"),
+        "priority": priority,
+        "sla_hours": sla_map[priority],
+        "status": "Open"
+    })
 
-def send_appliance_buttons(phone):
-    data = {
-        "messaging_product": "whatsapp",
-        "to": phone,
-        "type": "interactive",
-        "interactive": {
-            "type": "button",
-            "body": {"text": "Select Appliance"},
-            "action": {
-                "buttons": [
-                    {"type": "reply", "reply": {"id": "ac", "title": "AC"}},
-                    {"type": "reply", "reply": {"id": "geyser", "title": "Geyser"}},
-                    {"type": "reply", "reply": {"id": "washing", "title": "Washing Machine"}}
-                ]
-            }
-        }
-    }
-    send_whatsapp(data)
+    send_text(phone, f"Ticket {ticket_id} created successfully!")
 
-def send_urgency_buttons(phone):
-    data = {
-        "messaging_product": "whatsapp",
-        "to": phone,
-        "type": "interactive",
-        "interactive": {
-            "type": "button",
-            "body": {"text": "Select Urgency"},
-            "action": {
-                "buttons": [
-                    {"type": "reply", "reply": {"id": "low", "title": "Low"}},
-                    {"type": "reply", "reply": {"id": "medium", "title": "Medium"}},
-                    {"type": "reply", "reply": {"id": "high", "title": "High"}}
-                ]
-            }
-        }
-    }
-    send_whatsapp(data)
+def fetch_ticket_status(phone, ticket_id):
+    doc = db.collection("tickets").document(ticket_id).get()
 
+    if not doc.exists:
+        send_text(phone, "Ticket not found.")
+        return
+
+    data = doc.to_dict()
+    send_text(
+        phone,
+        f"Status: {data.get('status')}\nPriority: {data.get('priority')}\nSLA: {data.get('sla_hours')} hrs"
+    )
+
+# =========================
+# 🔹 WHATSAPP API
+# =========================
 def send_text(phone, text):
     data = {
         "messaging_product": "whatsapp",
@@ -223,40 +280,10 @@ def send_text(phone, text):
     }
     send_whatsapp(data)
 
-
 def send_whatsapp(data):
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {ACCESS_TOKEN}",
         "Content-Type": "application/json"
     }
-
-    response = requests.post(url, headers=headers, json=data)
-
-    print("WHATSAPP RESPONSE:", response.status_code)
-    print("WHATSAPP BODY:", response.text)
-
-
-def save_temp(phone, data):
-    db.collection("conversations").document(phone).set(data, merge=True)
-
-
-def complete_ticket(phone, urgency):
-    convo_ref = db.collection("conversations").document(phone)
-    convo = convo_ref.get().to_dict()
-
-    ticket_id = str(uuid.uuid4())[:8]
-
-    db.collection("tickets").document(ticket_id).set({
-        "phone": phone,
-        "category": convo.get("category"),
-        "subcategory": convo.get("subcategory"),
-        "room": convo.get("room"),
-        "description": convo.get("description"),
-        "urgency": urgency,
-        "status": "Open"
-    })
-
-    send_text(phone, f"Ticket {ticket_id} created successfully!")
-
-    convo_ref.delete()
+    requests.post(url, headers=headers, json=data)
