@@ -101,6 +101,10 @@ def verify(request: Request):
         return PlainTextResponse(params.get("hub.challenge"))
     return PlainTextResponse("Verification failed", status_code=403)
 
+# ================= HEALTH CHECK =====================
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 # ================= RECEIVE WHATSAPP =================
 @app.post("/webhook")
