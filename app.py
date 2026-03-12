@@ -73,7 +73,14 @@ class TicketUpdate(BaseModel):
 
 @app.put("/update-ticket")
 def update_ticket(data: TicketUpdate):
+
     ticket_ref = db.collection("tickets").document(data.ticket_id)
+    ticket_doc = ticket_ref.get()
+
+    if not ticket_doc.exists:
+        return {"error": "Ticket not found"}
+
+    ticket_data = ticket_doc.to_dict()
 
     update_data = {}
 
@@ -87,11 +94,38 @@ def update_ticket(data: TicketUpdate):
 
     ticket_ref.update(update_data)
 
+    phone = ticket_data.get("phone")
+
+    status = update_data.get("status", ticket_data.get("status"))
+    technician = update_data.get("assigned_to", ticket_data.get("assigned_to"))
+
+    # Send WhatsApp update
+    if status == "Closed":
+        send_text(phone, f"""
+✅ Issue Resolved
+
+Ticket ID: {data.ticket_id}
+
+Your complaint has been resolved.
+
+If the issue persists, please raise another complaint.
+""")
+
+    else:
+        send_text(phone, f"""
+📢 Ticket Update
+
+Ticket ID: {data.ticket_id}
+Status: {status}
+Assigned To: {technician if technician else "Pending"}
+
+You will receive updates automatically on WhatsApp.
+""")
+
     return {
         "message": "Ticket updated successfully",
         "updated_fields": update_data
     }
-
 
 # ================= WEBHOOK VERIFY =================
 @app.get("/webhook")
@@ -152,9 +186,9 @@ async def receive(request: Request):
                 send_priority_buttons(phone)
                 return {"status": "ok"}
 
-            elif convo.get("step") == "waiting_ticket_lookup":
-                fetch_ticket_status(phone, text)
-                return {"status": "ok"}
+            # elif convo.get("step") == "waiting_ticket_lookup":
+            #     fetch_ticket_status(phone, text)
+            #     return {"status": "ok"}
 
             else:
                 send_main_menu(phone)
@@ -186,9 +220,9 @@ async def receive(request: Request):
             if selected == "raise":
                 send_bucket_buttons(phone)
 
-            elif selected == "enquire":
-                convo_ref.set({"step": "waiting_ticket_lookup"}, merge=True)
-                send_text(phone, "Enter Ticket ID:")
+            # elif selected == "enquire":
+            #     convo_ref.set({"step": "waiting_ticket_lookup"}, merge=True)
+            #     send_text(phone, "Enter Ticket ID:")
 
             elif selected == "hostel":
                 convo_ref.set({"bucket": "Hostel"}, merge=True)
@@ -222,8 +256,7 @@ async def receive(request: Request):
 # ================= MENUS =================
 def send_main_menu(phone):
     send_buttons(phone, "Choose option:", [
-        ("raise", "Raise Complaint"),
-        ("enquire", "Enquire Ticket")
+        ("raise", "Raise Complaint")
     ])
 
 
@@ -313,18 +346,24 @@ def complete_ticket(phone, priority):
         "updated_at": None
     })
 
-    send_text(phone, f"Ticket {ticket_id} created successfully!")
+    # send_text(phone, f"Ticket {ticket_id} created successfully!")
+
+    send_text(phone, f"""
+    Complaint Registered
+    Ticket ID: {ticket_id}
+    Our team will review your issue and update you on WhatsApp automatically.
+    """)
 
 
-def fetch_ticket_status(phone, ticket_id):
-    doc = db.collection("tickets").document(ticket_id).get()
+# def fetch_ticket_status(phone, ticket_id):
+#     doc = db.collection("tickets").document(ticket_id).get()
 
-    if not doc.exists:
-        send_text(phone, "Ticket not found.")
-        return
+#     if not doc.exists:
+#         send_text(phone, "Ticket not found.")
+#         return
 
-    data = doc.to_dict()
-    send_text(phone, f"Status: {data.get('status')}")
+#     data = doc.to_dict()
+#     send_text(phone, f"Status: {data.get('status')}")
 
 
 # ================= WHATSAPP =================
