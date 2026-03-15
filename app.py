@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import PlainTextResponse, HTMLResponse
+from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import firebase_admin
@@ -15,7 +15,7 @@ app = FastAPI()
 # ================= CORS =================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict later to your admin UI domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,9 +34,10 @@ VERIFY_TOKEN = "campusbot"
 PHONE_NUMBER_ID = "946946368512302"
 ACCESS_TOKEN = os.environ["WHATSAPP_TOKEN"]
 
-# ================= JSON API FOR ADMIN UI =================
+# ================= GET TICKETS =================
 @app.get("/tickets")
 def get_tickets():
+
     tickets = (
         db.collection("tickets")
         .order_by("created_at", direction=firestore.Query.DESCENDING)
@@ -47,6 +48,7 @@ def get_tickets():
 
     for ticket in tickets:
         data = ticket.to_dict()
+
         result.append({
             "id": ticket.id,
             "bucket": data.get("bucket", ""),
@@ -57,6 +59,7 @@ def get_tickets():
             "priority": data.get("priority", ""),
             "status": data.get("status", "Open"),
             "assigned_to": data.get("assigned_to", ""),
+            "admin_comment": data.get("admin_comment", ""),
             "created_at": data.get("created_at"),
             "updated_at": data.get("updated_at")
         })
@@ -65,10 +68,12 @@ def get_tickets():
 
 
 # ================= UPDATE TICKET =================
+
 class TicketUpdate(BaseModel):
     ticket_id: str
     status: str | None = None
     assigned_to: str | None = None
+    admin_comment: str | None = None
 
 
 @app.put("/update-ticket")
@@ -90,6 +95,9 @@ def update_ticket(data: TicketUpdate):
     if data.assigned_to is not None:
         update_data["assigned_to"] = data.assigned_to
 
+    if data.admin_comment is not None:
+        update_data["admin_comment"] = data.admin_comment
+
     update_data["updated_at"] = datetime.utcnow()
 
     ticket_ref.update(update_data)
@@ -98,19 +106,22 @@ def update_ticket(data: TicketUpdate):
 
     status = update_data.get("status", ticket_data.get("status"))
     technician = update_data.get("assigned_to", ticket_data.get("assigned_to"))
+    comment = update_data.get("admin_comment", ticket_data.get("admin_comment"))
 
-    # Send WhatsApp update
+    # CLOSED MESSAGE
     if status == "Closed":
         send_text(phone, f"""
 ✅ Issue Resolved
 
 Ticket ID: {data.ticket_id}
 
-Your complaint has been resolved.
+Admin Note:
+{comment if comment else "Issue resolved successfully."}
 
 If the issue persists, please raise another complaint.
 """)
 
+    # STATUS UPDATE
     else:
         send_text(phone, f"""
 📢 Ticket Update
@@ -118,6 +129,9 @@ If the issue persists, please raise another complaint.
 Ticket ID: {data.ticket_id}
 Status: {status}
 Assigned To: {technician if technician else "Pending"}
+
+Admin Note:
+{comment if comment else "No additional notes"}
 
 You will receive updates automatically on WhatsApp.
 """)
@@ -127,26 +141,33 @@ You will receive updates automatically on WhatsApp.
         "updated_fields": update_data
     }
 
+
 # ================= WEBHOOK VERIFY =================
 @app.get("/webhook")
 def verify(request: Request):
     params = request.query_params
+
     if params.get("hub.verify_token") == VERIFY_TOKEN:
         return PlainTextResponse(params.get("hub.challenge"))
+
     return PlainTextResponse("Verification failed", status_code=403)
 
-# ================= HEALTH CHECK =====================
+
+# ================= HEALTH =================
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-# ================= RECEIVE WHATSAPP =================
+
+# ================= RECEIVE MESSAGE =================
 @app.post("/webhook")
 async def receive(request: Request):
+
     body = await request.json()
     print("FULL BODY:", body)
 
     try:
+
         entry = body["entry"][0]
         changes = entry["changes"][0]
         value = changes["value"]
@@ -163,7 +184,9 @@ async def receive(request: Request):
         convo = convo_ref.get().to_dict() or {}
 
         # ================= TEXT =================
+
         if msg_type == "text":
+
             text = message["text"]["body"].strip().lower()
 
             if text in ["hi", "hello", "menu"]:
@@ -186,19 +209,17 @@ async def receive(request: Request):
                 send_priority_buttons(phone)
                 return {"status": "ok"}
 
-            # elif convo.get("step") == "waiting_ticket_lookup":
-            #     fetch_ticket_status(phone, text)
-            #     return {"status": "ok"}
-
             else:
                 send_main_menu(phone)
                 return {"status": "ok"}
 
-        # ================= BUTTONS =================
+        # ================= BUTTON INTERACTION =================
+
         elif msg_type == "interactive":
+
             selected = message["interactive"]["button_reply"]["id"]
 
-            # ---- GLOBAL BACK HANDLERS ----
+            # GLOBAL BACK
             if selected == "back_main":
                 convo_ref.delete()
                 send_main_menu(phone)
@@ -216,13 +237,12 @@ async def receive(request: Request):
                 send_acad_fac(phone)
                 return {"status": "ok"}
 
-            # ---- MAIN FLOW ----
+            # MAIN MENU
             if selected == "raise":
                 send_bucket_buttons(phone)
 
-            # elif selected == "enquire":
-            #     convo_ref.set({"step": "waiting_ticket_lookup"}, merge=True)
-            #     send_text(phone, "Enter Ticket ID:")
+            elif selected == "emergency":
+                send_emergency_contacts(phone)
 
             elif selected == "hostel":
                 convo_ref.set({"bucket": "Hostel"}, merge=True)
@@ -238,12 +258,11 @@ async def receive(request: Request):
             elif selected == "utilities":
                 send_utilities_options(phone)
 
-            elif selected in ["ac", "geyser", "wash_mach",
-                              "wifi", "water_disp", "cleaning"]:
+            elif selected in ["ac", "geyser", "wash_mach", "wifi", "water_disp", "cleaning"]:
                 convo_ref.set({"category": selected, "step": "waiting_room"}, merge=True)
                 send_text(phone, "Enter Room No:")
 
-            elif selected in ["high", "medium", "low"]:
+            elif selected in ["high", "medium"]:
                 complete_ticket(phone, selected)
                 convo_ref.delete()
 
@@ -254,13 +273,17 @@ async def receive(request: Request):
 
 
 # ================= MENUS =================
+
 def send_main_menu(phone):
+
     send_buttons(phone, "Choose option:", [
-        ("raise", "Raise Complaint")
+        ("raise", "Raise Complaint"),
+        ("emergency", "Emergency Contacts")
     ])
 
 
 def send_bucket_buttons(phone):
+
     send_buttons(phone, "Select Category:", [
         ("hostel", "Hostel"),
         ("acad_fac", "Acad & Fac"),
@@ -269,6 +292,7 @@ def send_bucket_buttons(phone):
 
 
 def send_hostel_main(phone):
+
     send_buttons(phone, "Hostel Category:", [
         ("electrical", "Electrical"),
         ("utilities", "Utilities"),
@@ -277,6 +301,7 @@ def send_hostel_main(phone):
 
 
 def send_electrical_options(phone):
+
     send_buttons(phone, "Electrical Issue:", [
         ("ac", "AC"),
         ("geyser", "Geyser"),
@@ -285,6 +310,7 @@ def send_electrical_options(phone):
 
 
 def send_utilities_options(phone):
+
     send_buttons(phone, "Utility Issue:", [
         ("wifi", "WiFi"),
         ("water_disp", "Water Disp"),
@@ -293,6 +319,7 @@ def send_utilities_options(phone):
 
 
 def send_acad_fac(phone):
+
     send_buttons(phone, "Select Type:", [
         ("infra", "Infra Issues"),
         ("mess", "Mess Issues"),
@@ -301,6 +328,7 @@ def send_acad_fac(phone):
 
 
 def send_priority_buttons(phone):
+
     send_buttons(phone, "Select Priority:", [
         ("high", "High"),
         ("medium", "Medium"),
@@ -308,7 +336,22 @@ def send_priority_buttons(phone):
     ])
 
 
+def send_emergency_contacts(phone):
+
+    send_text(phone, """
+🚨 Emergency Contacts
+
+Campus Security: +91XXXXXXXXXX
+Medical Emergency: +91XXXXXXXXXX
+Hostel Warden: +91XXXXXXXXXX
+Maintenance Emergency: +91XXXXXXXXXX
+
+Type 'menu' anytime to return to main menu.
+""")
+
+
 def send_buttons(phone, text, buttons):
+
     data = {
         "messaging_product": "whatsapp",
         "to": phone,
@@ -324,12 +367,16 @@ def send_buttons(phone, text, buttons):
             }
         }
     }
+
     send_whatsapp(data)
 
 
-# ================= TICKET CREATION =================
+# ================= CREATE TICKET =================
+
 def complete_ticket(phone, priority):
+
     convo = db.collection("conversations").document(phone).get().to_dict()
+
     ticket_id = str(uuid.uuid4())[:8]
 
     db.collection("tickets").document(ticket_id).set({
@@ -342,43 +389,40 @@ def complete_ticket(phone, priority):
         "priority": priority,
         "status": "Open",
         "assigned_to": "",
+        "admin_comment": "",
         "created_at": datetime.utcnow(),
         "updated_at": None
     })
 
-    # send_text(phone, f"Ticket {ticket_id} created successfully!")
-
     send_text(phone, f"""
-    Complaint Registered
-    Ticket ID: {ticket_id}
-    Our team will review your issue and update you on WhatsApp automatically.
-    """)
+Complaint Registered
+
+Ticket ID: {ticket_id}
+
+Our team will review your issue and update you on WhatsApp automatically.
+""")
 
 
-# def fetch_ticket_status(phone, ticket_id):
-#     doc = db.collection("tickets").document(ticket_id).get()
+# ================= SEND TEXT =================
 
-#     if not doc.exists:
-#         send_text(phone, "Ticket not found.")
-#         return
-
-#     data = doc.to_dict()
-#     send_text(phone, f"Status: {data.get('status')}")
-
-
-# ================= WHATSAPP =================
 def send_text(phone, text):
+
     data = {
         "messaging_product": "whatsapp",
         "to": phone,
         "type": "text",
         "text": {"body": text}
     }
+
     send_whatsapp(data)
 
 
+# ================= WHATSAPP API =================
+
 def send_whatsapp(data):
+
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
+
     headers = {
         "Authorization": f"Bearer {ACCESS_TOKEN}",
         "Content-Type": "application/json"
