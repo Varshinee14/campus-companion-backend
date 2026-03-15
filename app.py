@@ -108,7 +108,6 @@ def update_ticket(data: TicketUpdate):
     technician = update_data.get("assigned_to", ticket_data.get("assigned_to"))
     comment = update_data.get("admin_comment", ticket_data.get("admin_comment"))
 
-    # CLOSED MESSAGE
     if status == "Closed":
         send_text(phone, f"""
 ✅ Issue Resolved
@@ -120,8 +119,6 @@ Admin Note:
 
 If the issue persists, please raise another complaint.
 """)
-
-    # STATUS UPDATE
     else:
         send_text(phone, f"""
 📢 Ticket Update
@@ -184,7 +181,6 @@ async def receive(request: Request):
         convo = convo_ref.get().to_dict() or {}
 
         # ================= TEXT =================
-
         if msg_type == "text":
 
             text = message["text"]["body"].strip().lower()
@@ -214,12 +210,10 @@ async def receive(request: Request):
                 return {"status": "ok"}
 
         # ================= BUTTON INTERACTION =================
-
         elif msg_type == "interactive":
 
             selected = message["interactive"]["button_reply"]["id"]
 
-            # GLOBAL BACK
             if selected == "back_main":
                 convo_ref.delete()
                 send_main_menu(phone)
@@ -237,19 +231,26 @@ async def receive(request: Request):
                 send_acad_fac(phone)
                 return {"status": "ok"}
 
-            # MAIN MENU
+            # START NEW COMPLAINT (RESET STATE)
             if selected == "raise":
+                convo_ref.delete()
                 send_bucket_buttons(phone)
 
             elif selected == "emergency":
                 send_emergency_contacts(phone)
 
             elif selected == "hostel":
-                convo_ref.set({"bucket": "Hostel"}, merge=True)
+                convo_ref.set({
+                    "bucket": "Hostel",
+                    "category": None
+                }, merge=True)
                 send_hostel_main(phone)
 
             elif selected == "acad_fac":
-                convo_ref.set({"bucket": "Acad & Fac"}, merge=True)
+                convo_ref.set({
+                    "bucket": "Acad & Fac",
+                    "category": None
+                }, merge=True)
                 send_acad_fac(phone)
 
             elif selected == "electrical":
@@ -259,7 +260,10 @@ async def receive(request: Request):
                 send_utilities_options(phone)
 
             elif selected in ["ac", "geyser", "wash_mach", "wifi", "water_disp", "cleaning"]:
-                convo_ref.set({"category": selected, "step": "waiting_room"}, merge=True)
+                convo_ref.set({
+                    "category": selected,
+                    "step": "waiting_room"
+                }, merge=True)
                 send_text(phone, "Enter Room No:")
 
             elif selected in ["high", "medium"]:
@@ -275,7 +279,6 @@ async def receive(request: Request):
 # ================= MENUS =================
 
 def send_main_menu(phone):
-
     send_buttons(phone, "Choose option:", [
         ("raise", "Raise Complaint"),
         ("emergency", "Emergency Contacts")
@@ -283,7 +286,6 @@ def send_main_menu(phone):
 
 
 def send_bucket_buttons(phone):
-
     send_buttons(phone, "Select Category:", [
         ("hostel", "Hostel"),
         ("acad_fac", "Acad & Fac"),
@@ -292,7 +294,6 @@ def send_bucket_buttons(phone):
 
 
 def send_hostel_main(phone):
-
     send_buttons(phone, "Hostel Category:", [
         ("electrical", "Electrical"),
         ("utilities", "Utilities"),
@@ -301,7 +302,6 @@ def send_hostel_main(phone):
 
 
 def send_electrical_options(phone):
-
     send_buttons(phone, "Electrical Issue:", [
         ("ac", "AC"),
         ("geyser", "Geyser"),
@@ -310,7 +310,6 @@ def send_electrical_options(phone):
 
 
 def send_utilities_options(phone):
-
     send_buttons(phone, "Utility Issue:", [
         ("wifi", "WiFi"),
         ("water_disp", "Water Disp"),
@@ -319,7 +318,6 @@ def send_utilities_options(phone):
 
 
 def send_acad_fac(phone):
-
     send_buttons(phone, "Select Type:", [
         ("infra", "Infra Issues"),
         ("mess", "Mess Issues"),
@@ -328,7 +326,6 @@ def send_acad_fac(phone):
 
 
 def send_priority_buttons(phone):
-
     send_buttons(phone, "Select Priority:", [
         ("high", "High"),
         ("medium", "Medium"),
@@ -375,7 +372,7 @@ def send_buttons(phone, text, buttons):
 
 def complete_ticket(phone, priority):
 
-    convo = db.collection("conversations").document(phone).get().to_dict()
+    convo = db.collection("conversations").document(phone).get().to_dict() or {}
 
     ticket_id = str(uuid.uuid4())[:8]
 
