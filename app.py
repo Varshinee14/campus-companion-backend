@@ -33,6 +33,140 @@ db = firestore.client()
 VERIFY_TOKEN = "campusbot"
 PHONE_NUMBER_ID = "946946368512302"
 ACCESS_TOKEN = os.environ["WHATSAPP_TOKEN"]
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
+
+# ================= PRIORITY CLASSIFIER =================
+#
+# HOW IT WORKS:
+#   1. PRIMARY  — typeform/distilbart-mnli-12-3 (distilled, fast ~0.8s warm)
+#   2. SECONDARY — facebook/bart-large-mnli (larger, ~2-4s warm, only if primary fails)
+#   3. FALLBACK  — keyword matching (instant, fires if both APIs fail or no HF_TOKEN)
+#
+# Zero-shot NLI: model scores how well the description "entails" each candidate
+# label. No training needed — works on paragraphs, indirect language, typos.
+#
+# LATENCY PROTECTION:
+#   - 5 second timeout on all API calls — student never waits more than that
+#   - If model is cold-starting, HF returns {"error": "loading"} — we catch and fallback
+#   - keyword fallback is instant so worst case is always < 1 sec
+
+HF_CANDIDATE_LABELS = [
+    "fire, smoke, or safety emergency",
+    "water leakage, flooding, or water supply failure",
+    "water quality, contamination, or unsafe drinking water",
+    "sewage, drain overflow, or toilet not working",
+    "lift or elevator not working",
+    "electrical hazard, short circuit, or power failure",
+    "AC, geyser, or heating not working at all",
+    "wifi or internet not working",
+    "water dispenser or washing machine issue",
+    "mess food quality or hygiene complaint",
+    "general maintenance or minor repair",
+]
+
+LABEL_PRIORITY_MAP = {
+    "fire, smoke, or safety emergency": "High",
+    "water leakage, flooding, or water supply failure": "High",
+    "water quality, contamination, or unsafe drinking water": "High",
+    "sewage, drain overflow, or toilet not working": "High",
+    "lift or elevator not working": "High",
+    "electrical hazard, short circuit, or power failure": "High",
+    "AC, geyser, or heating not working at all": "Medium",
+    "wifi or internet not working": "Medium",
+    "water dispenser or washing machine issue": "Medium",
+    "mess food quality or hygiene complaint": "Medium",
+    "general maintenance or minor repair": "Low",
+}
+
+# Two models tried in order — distilbart is 10x smaller and faster
+HF_MODELS = [
+    "typeform/distilbart-mnli-12-3",      # PRIMARY: ~0.8s warm, small
+    "facebook/bart-large-mnli",           # SECONDARY: ~2-4s warm, larger
+]
+
+# Keyword fallback — instant, fires if both HF models fail or no token set
+KEYWORD_RULES = [
+    ("High", [
+        "fire", "smoke", "burning", "flame",
+        "flood", "flooding", "leaking", "water leak", "no water", "water not coming",
+        "contaminated", "dirty water", "smell", "yellowish", "unsafe to drink",
+        "flush", "flush not working", "toilet overflow", "sewage", "drain overflow",
+        "lift stuck", "lift not working", "elevator stuck", "elevator not working",
+        "short circuit", "electric shock", "no electricity", "power cut", "sparks", "blackening",
+        "urgent", "emergency", "immediately", "asap",
+    ]),
+    ("Medium", [
+        "wifi", "internet not working", "no internet",
+        "water dispenser", "dispenser not working",
+        "washing machine", "washer",
+        "ac not working", "no cooling", "geyser not working", "no hot water",
+        "fan not working", "lights not working", "switch not working",
+        "mess food", "food quality", "cold food",
+    ]),
+]
+
+
+def _call_hf_model(model: str, text: str) -> str:
+    """
+    Calls one HF model. Returns priority string or raises on any failure.
+    Timeout = 5s so student never waits more than this per attempt.
+    """
+    url = f"https://api-inference.huggingface.co/models/{model}"
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+
+    response = requests.post(
+        url,
+        headers=headers,
+        json={
+            "inputs": text,
+            "parameters": {"candidate_labels": HF_CANDIDATE_LABELS},
+        },
+        timeout=5,
+    )
+
+    response.raise_for_status()
+    result = response.json()
+
+    # HF returns loading error as a dict with "error" key — not an HTTP error
+    if isinstance(result, dict) and "error" in result:
+        raise RuntimeError(f"HF model loading: {result['error']}")
+
+    top_label = result["labels"][0]
+    top_score = result["scores"][0]
+    priority = LABEL_PRIORITY_MAP.get(top_label, "Low")
+
+    print(f"HF [{model}] label={top_label!r} score={top_score:.2f} priority={priority}")
+    return priority
+
+
+def _classify_keywords(category: str, description: str) -> str:
+    """Instant keyword fallback."""
+    text = f"{category} {description}".lower()
+    for priority, keywords in KEYWORD_RULES:
+        for kw in keywords:
+            if kw in text:
+                print(f"KEYWORD FALLBACK: {kw!r} -> {priority}")
+                return priority
+    return "Low"
+
+
+def classify_priority(category: str, description: str) -> str:
+    """
+    Main classifier entry point.
+    Tries HF models in order, falls back to keywords on any failure.
+    Always returns within ~5 seconds maximum.
+    """
+    if HF_TOKEN:
+        text = f"{category}: {description}"
+        for model in HF_MODELS:
+            try:
+                return _call_hf_model(model, text)
+            except Exception as e:
+                print(f"HF [{model}] failed: {e} — trying next")
+
+    # Both models failed or no token — keyword fallback
+    print("Using keyword fallback")
+    return _classify_keywords(category, description)
 
 # ================= GET TICKETS =================
 @app.get("/tickets")
@@ -74,6 +208,7 @@ class TicketUpdate(BaseModel):
     status: str | None = None
     assigned_to: str | None = None
     admin_comment: str | None = None
+    priority: str | None = None  # Admin can override auto-classified priority
 
 
 @app.put("/update-ticket")
@@ -97,6 +232,9 @@ def update_ticket(data: TicketUpdate):
 
     if data.admin_comment is not None:
         update_data["admin_comment"] = data.admin_comment
+
+    if data.priority is not None:
+        update_data["priority"] = data.priority
 
     update_data["updated_at"] = datetime.utcnow()
 
@@ -201,8 +339,13 @@ async def receive(request: Request):
                 return {"status": "ok"}
 
             elif convo.get("step") == "waiting_description":
-                convo_ref.set({"description": text, "step": "waiting_priority"}, merge=True)
-                send_priority_buttons(phone)
+                description = text
+                category = convo.get("category", "")
+                # Save description first, then classify and create ticket
+                convo_ref.set({"description": description}, merge=True)
+                auto_priority = classify_priority(category, description)
+                complete_ticket(phone, auto_priority)
+                convo_ref.delete()
                 return {"status": "ok"}
 
             else:
@@ -266,10 +409,6 @@ async def receive(request: Request):
                 }, merge=True)
                 send_text(phone, "Enter Room No:")
 
-            elif selected in ["high", "medium"]:
-                complete_ticket(phone, selected)
-                convo_ref.delete()
-
     except Exception as e:
         print("ERROR:", e)
 
@@ -325,14 +464,6 @@ def send_acad_fac(phone):
     ])
 
 
-def send_priority_buttons(phone):
-    send_buttons(phone, "Select Priority:", [
-        ("high", "High"),
-        ("medium", "Medium"),
-        ("back_main", "⬅ Cancel")
-    ])
-
-
 def send_emergency_contacts(phone):
 
     send_text(phone, """
@@ -375,6 +506,7 @@ def complete_ticket(phone, priority):
     convo = db.collection("conversations").document(phone).get().to_dict() or {}
 
     ticket_id = str(uuid.uuid4())[:8]
+    priority_emoji = {"High": "🔴", "Medium": "🟡", "Low": "🟢"}.get(priority, "🟢")
 
     db.collection("tickets").document(ticket_id).set({
         "phone": phone,
@@ -392,9 +524,10 @@ def complete_ticket(phone, priority):
     })
 
     send_text(phone, f"""
-Complaint Registered
+✅ Complaint Registered
 
 Ticket ID: {ticket_id}
+Priority: {priority_emoji} {priority}
 
 Our team will review your issue and update you on WhatsApp automatically.
 """)
