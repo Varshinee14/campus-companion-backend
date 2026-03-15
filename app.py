@@ -38,17 +38,11 @@ HF_TOKEN = os.environ.get("HF_TOKEN", "")
 # ================= PRIORITY CLASSIFIER =================
 #
 # HOW IT WORKS:
-#   1. PRIMARY  — typeform/distilbart-mnli-12-3 (distilled, fast ~0.8s warm)
-#   2. SECONDARY — facebook/bart-large-mnli (larger, ~2-4s warm, only if primary fails)
-#   3. FALLBACK  — keyword matching (instant, fires if both APIs fail or no HF_TOKEN)
+#   1. PRIMARY   — typeform/distilbart-mnli-12-3 (fast ~0.8s warm)
+#   2. SECONDARY — facebook/bart-large-mnli (larger, ~2-4s warm)
+#   3. FALLBACK  — keyword matching (instant, always works)
 #
-# Zero-shot NLI: model scores how well the description "entails" each candidate
-# label. No training needed — works on paragraphs, indirect language, typos.
-#
-# LATENCY PROTECTION:
-#   - 5 second timeout on all API calls — student never waits more than that
-#   - If model is cold-starting, HF returns {"error": "loading"} — we catch and fallback
-#   - keyword fallback is instant so worst case is always < 1 sec
+# 5 second timeout per model — student never waits more than ~6s total
 
 HF_CANDIDATE_LABELS = [
     "fire, smoke, or safety emergency",
@@ -78,17 +72,15 @@ LABEL_PRIORITY_MAP = {
     "general maintenance or minor repair": "Low",
 }
 
-# Two models tried in order — distilbart is 10x smaller and faster
 HF_MODELS = [
-    "typeform/distilbart-mnli-12-3",      # PRIMARY: ~0.8s warm, small
-    "facebook/bart-large-mnli",           # SECONDARY: ~2-4s warm, larger
+    "typeform/distilbart-mnli-12-3",
+    "facebook/bart-large-mnli",
 ]
 
-# Keyword fallback — instant, fires if both HF models fail or no token set
 KEYWORD_RULES = [
     ("High", [
         "fire", "smoke", "burning", "flame",
-        "flood", "flooding", "leaking", "water leak", "no water", "water not coming",
+        "flood", "flooding", "leaking", "water leak", "no water",
         "contaminated", "dirty water", "smell", "yellowish", "unsafe to drink",
         "flush", "flush not working", "toilet overflow", "sewage", "drain overflow",
         "lift stuck", "lift not working", "elevator stuck", "elevator not working",
@@ -98,49 +90,34 @@ KEYWORD_RULES = [
     ("Medium", [
         "wifi", "internet not working", "no internet",
         "water dispenser", "dispenser not working",
-        "washing machine", "washer",
+        "washing machine", "washer", "fridge", "oven",
         "ac not working", "no cooling", "geyser not working", "no hot water",
         "fan not working", "lights not working", "switch not working",
-        "mess food", "food quality", "cold food",
+        "mess food", "food quality", "cold food", "vending",
     ]),
 ]
 
 
 def _call_hf_model(model: str, text: str) -> str:
-    """
-    Calls one HF model. Returns priority string or raises on any failure.
-    Timeout = 5s so student never waits more than this per attempt.
-    """
     url = f"https://api-inference.huggingface.co/models/{model}"
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-
     response = requests.post(
-        url,
-        headers=headers,
-        json={
-            "inputs": text,
-            "parameters": {"candidate_labels": HF_CANDIDATE_LABELS},
-        },
+        url, headers=headers,
+        json={"inputs": text, "parameters": {"candidate_labels": HF_CANDIDATE_LABELS}},
         timeout=5,
     )
-
     response.raise_for_status()
     result = response.json()
-
-    # HF returns loading error as a dict with "error" key — not an HTTP error
     if isinstance(result, dict) and "error" in result:
         raise RuntimeError(f"HF model loading: {result['error']}")
-
     top_label = result["labels"][0]
     top_score = result["scores"][0]
     priority = LABEL_PRIORITY_MAP.get(top_label, "Low")
-
     print(f"HF [{model}] label={top_label!r} score={top_score:.2f} priority={priority}")
     return priority
 
 
 def _classify_keywords(category: str, description: str) -> str:
-    """Instant keyword fallback."""
     text = f"{category} {description}".lower()
     for priority, keywords in KEYWORD_RULES:
         for kw in keywords:
@@ -151,11 +128,6 @@ def _classify_keywords(category: str, description: str) -> str:
 
 
 def classify_priority(category: str, description: str) -> str:
-    """
-    Main classifier entry point.
-    Tries HF models in order, falls back to keywords on any failure.
-    Always returns within ~5 seconds maximum.
-    """
     if HF_TOKEN:
         text = f"{category}: {description}"
         for model in HF_MODELS:
@@ -163,57 +135,51 @@ def classify_priority(category: str, description: str) -> str:
                 return _call_hf_model(model, text)
             except Exception as e:
                 print(f"HF [{model}] failed: {e} — trying next")
-
-    # Both models failed or no token — keyword fallback
     print("Using keyword fallback")
     return _classify_keywords(category, description)
+
 
 # ================= GET TICKETS =================
 @app.get("/tickets")
 def get_tickets():
-
     tickets = (
         db.collection("tickets")
         .order_by("created_at", direction=firestore.Query.DESCENDING)
         .stream()
     )
-
     result = []
-
     for ticket in tickets:
         data = ticket.to_dict()
-
         result.append({
             "id": ticket.id,
+            "name": data.get("name", ""),
+            "hostel_building": data.get("hostel_building", ""),
             "bucket": data.get("bucket", ""),
             "category": data.get("category", ""),
             "room": data.get("room", ""),
-            "roll_number": data.get("roll_number", ""),
             "description": data.get("description", ""),
+            "available_slot": data.get("available_slot", ""),
             "priority": data.get("priority", ""),
             "status": data.get("status", "Open"),
             "assigned_to": data.get("assigned_to", ""),
             "admin_comment": data.get("admin_comment", ""),
             "created_at": data.get("created_at"),
-            "updated_at": data.get("updated_at")
+            "updated_at": data.get("updated_at"),
         })
-
     return result
 
 
 # ================= UPDATE TICKET =================
-
 class TicketUpdate(BaseModel):
     ticket_id: str
     status: str | None = None
     assigned_to: str | None = None
     admin_comment: str | None = None
-    priority: str | None = None  # Admin can override auto-classified priority
+    priority: str | None = None
 
 
 @app.put("/update-ticket")
 def update_ticket(data: TicketUpdate):
-
     ticket_ref = db.collection("tickets").document(data.ticket_id)
     ticket_doc = ticket_ref.get()
 
@@ -221,27 +187,21 @@ def update_ticket(data: TicketUpdate):
         return {"error": "Ticket not found"}
 
     ticket_data = ticket_doc.to_dict()
-
     update_data = {}
 
     if data.status:
         update_data["status"] = data.status
-
     if data.assigned_to is not None:
         update_data["assigned_to"] = data.assigned_to
-
     if data.admin_comment is not None:
         update_data["admin_comment"] = data.admin_comment
-
     if data.priority is not None:
         update_data["priority"] = data.priority
 
     update_data["updated_at"] = datetime.utcnow()
-
     ticket_ref.update(update_data)
 
     phone = ticket_data.get("phone")
-
     status = update_data.get("status", ticket_data.get("status"))
     technician = update_data.get("assigned_to", ticket_data.get("assigned_to"))
     comment = update_data.get("admin_comment", ticket_data.get("admin_comment"))
@@ -271,20 +231,15 @@ Admin Note:
 You will receive updates automatically on WhatsApp.
 """)
 
-    return {
-        "message": "Ticket updated successfully",
-        "updated_fields": update_data
-    }
+    return {"message": "Ticket updated successfully", "updated_fields": update_data}
 
 
 # ================= WEBHOOK VERIFY =================
 @app.get("/webhook")
 def verify(request: Request):
     params = request.query_params
-
     if params.get("hub.verify_token") == VERIFY_TOKEN:
         return PlainTextResponse(params.get("hub.challenge"))
-
     return PlainTextResponse("Verification failed", status_code=403)
 
 
@@ -297,12 +252,10 @@ def health():
 # ================= RECEIVE MESSAGE =================
 @app.post("/webhook")
 async def receive(request: Request):
-
     body = await request.json()
     print("FULL BODY:", body)
 
     try:
-
         entry = body["entry"][0]
         changes = entry["changes"][0]
         value = changes["value"]
@@ -318,30 +271,47 @@ async def receive(request: Request):
         convo_ref = db.collection("conversations").document(phone)
         convo = convo_ref.get().to_dict() or {}
 
-        # ================= TEXT =================
+        # ================= TEXT INPUT =================
         if msg_type == "text":
+            text = message["text"]["body"].strip()
+            text_lower = text.lower()
 
-            text = message["text"]["body"].strip().lower()
-
-            if text in ["hi", "hello", "menu"]:
+            # Always allow reset
+            if text_lower in ["hi", "hello", "menu"]:
                 convo_ref.delete()
                 send_main_menu(phone)
                 return {"status": "ok"}
 
-            if convo.get("step") == "waiting_room":
-                convo_ref.set({"room": text, "step": "waiting_roll"}, merge=True)
-                send_text(phone, "Enter Roll No:")
+            step = convo.get("step")
+
+            if step == "waiting_name":
+                convo_ref.set({"name": text, "step": "waiting_building"}, merge=True)
+                send_building_list(phone)
                 return {"status": "ok"}
 
-            elif convo.get("step") == "waiting_roll":
-                convo_ref.set({"roll_number": text, "step": "waiting_description"}, merge=True)
-                send_text(phone, "Describe issue briefly:")
+            elif step == "waiting_room":
+                convo_ref.set({"room": text, "step": "waiting_slot"}, merge=True)
+                send_text(phone, "📅 When are you available for the issue to be resolved?\n\nPlease mention a date and time\n(e.g. Tomorrow 10am - 12pm, or Today after 6pm)")
                 return {"status": "ok"}
 
-            elif convo.get("step") == "waiting_description":
+            elif step == "waiting_slot":
+                convo_ref.set({"available_slot": text, "step": "waiting_description"}, merge=True)
+                send_text(phone, "📝 Describe the issue briefly:")
+                return {"status": "ok"}
+
+            elif step == "waiting_description":
                 description = text
                 category = convo.get("category", "")
-                # Save description first, then classify and create ticket
+                convo_ref.set({"description": description}, merge=True)
+                auto_priority = classify_priority(category, description)
+                complete_ticket(phone, auto_priority)
+                convo_ref.delete()
+                return {"status": "ok"}
+
+            # Non-room-specific path — no room/slot steps
+            elif step == "waiting_description_direct":
+                description = text
+                category = convo.get("category", "")
                 convo_ref.set({"description": description}, merge=True)
                 auto_priority = classify_priority(category, description)
                 complete_ticket(phone, auto_priority)
@@ -354,9 +324,17 @@ async def receive(request: Request):
 
         # ================= BUTTON INTERACTION =================
         elif msg_type == "interactive":
+            interactive = message["interactive"]
+            interactive_type = interactive.get("type")
 
-            selected = message["interactive"]["button_reply"]["id"]
+            # ── List reply ──
+            if interactive_type == "list_reply":
+                selected = interactive["list_reply"]["id"]
+            # ── Button reply ──
+            else:
+                selected = interactive["button_reply"]["id"]
 
+            # ---- GLOBAL BACK HANDLERS ----
             if selected == "back_main":
                 convo_ref.delete()
                 send_main_menu(phone)
@@ -367,47 +345,120 @@ async def receive(request: Request):
                 return {"status": "ok"}
 
             if selected == "back_hostel":
-                send_hostel_main(phone)
+                send_hostel_menu(phone)
                 return {"status": "ok"}
 
-            if selected == "back_acad":
-                send_acad_fac(phone)
-                return {"status": "ok"}
-
-            # START NEW COMPLAINT (RESET STATE)
+            # ---- MAIN MENU ----
             if selected == "raise":
                 convo_ref.delete()
-                send_bucket_buttons(phone)
+                # Start with name collection
+                send_text(phone, "👋 Let's get started!\n\nPlease enter your *full name*:")
+                convo_ref.set({"step": "waiting_name"})
+                return {"status": "ok"}
 
             elif selected == "emergency":
                 send_emergency_contacts(phone)
+                return {"status": "ok"}
 
-            elif selected == "hostel":
-                convo_ref.set({
-                    "bucket": "Hostel",
-                    "category": None
-                }, merge=True)
-                send_hostel_main(phone)
+            # ---- BUCKET SELECTION ----
+            elif selected == "bucket_mess":
+                convo_ref.set({"bucket": "Mess & Food", "category": "mess_food", "step": "waiting_description_direct"}, merge=True)
+                send_text(phone, "🍽️ Describe your Mess & Food issue:\n\n(e.g. food quality, hygiene, menu, timings)")
+                return {"status": "ok"}
 
-            elif selected == "acad_fac":
-                convo_ref.set({
-                    "bucket": "Acad & Fac",
-                    "category": None
-                }, merge=True)
-                send_acad_fac(phone)
+            elif selected == "bucket_hostel":
+                convo_ref.set({"bucket": "Hostel"}, merge=True)
+                send_hostel_menu(phone)
+                return {"status": "ok"}
 
-            elif selected == "electrical":
-                send_electrical_options(phone)
+            elif selected == "bucket_it":
+                convo_ref.set({"bucket": "IT & Infra"}, merge=True)
+                send_it_menu(phone)
+                return {"status": "ok"}
 
-            elif selected == "utilities":
-                send_utilities_options(phone)
+            # ---- HOSTEL SUB-MENU ----
+            elif selected == "hostel_room":
+                send_room_specific_list(phone)
+                return {"status": "ok"}
 
-            elif selected in ["ac", "geyser", "wash_mach", "wifi", "water_disp", "cleaning"]:
+            elif selected == "hostel_common":
+                send_common_utilities_list(phone)
+                return {"status": "ok"}
+
+            # ---- ROOM SPECIFIC (list selections) ----
+            elif selected in ["cat_electrical_ac", "cat_furniture"]:
+                labels = {
+                    "cat_electrical_ac": "Electrical / AC",
+                    "cat_furniture": "Furniture",
+                }
                 convo_ref.set({
                     "category": selected,
+                    "category_label": labels[selected],
+                    "is_room_specific": True,
                     "step": "waiting_room"
                 }, merge=True)
-                send_text(phone, "Enter Room No:")
+                send_text(phone, "🚪 Enter your *room number*:")
+                return {"status": "ok"}
+
+            # ---- COMMON UTILITIES (list selections) ----
+            elif selected in ["cat_water_disp", "cat_fridge", "cat_oven",
+                              "cat_geyser", "cat_vending", "cat_washing",
+                              "cat_elevator", "cat_washroom"]:
+                labels = {
+                    "cat_water_disp": "Water Dispenser",
+                    "cat_fridge": "Fridge",
+                    "cat_oven": "Oven",
+                    "cat_geyser": "Geyser",
+                    "cat_vending": "Vending Machine",
+                    "cat_washing": "Washing Machine",
+                    "cat_elevator": "Elevator",
+                    "cat_washroom": "Washroom Issues",
+                }
+                convo_ref.set({
+                    "category": selected,
+                    "category_label": labels[selected],
+                    "is_room_specific": False,
+                    "step": "waiting_description_direct"
+                }, merge=True)
+                send_text(phone, f"📝 Describe the *{labels[selected]}* issue:")
+                return {"status": "ok"}
+
+            # ---- IT / INFRA ----
+            elif selected == "cat_wifi":
+                convo_ref.set({
+                    "category": "cat_wifi",
+                    "category_label": "WiFi",
+                    "is_room_specific": False,
+                    "step": "waiting_description_direct"
+                }, merge=True)
+                send_text(phone, "📶 Describe the WiFi issue:")
+                return {"status": "ok"}
+
+            elif selected == "cat_rec_centre":
+                convo_ref.set({
+                    "category": "cat_rec_centre",
+                    "category_label": "Rec Centre",
+                    "is_room_specific": False,
+                    "step": "waiting_description_direct"
+                }, merge=True)
+                send_text(phone, "🏋️ Describe the Rec Centre issue:")
+                return {"status": "ok"}
+
+            # ---- BUILDING SELECTION (list reply) ----
+            elif selected in ["bldg_a", "bldg_b", "bldg_c", "bldg_d", "bldg_e"]:
+                labels = {
+                    "bldg_a": "Block A",
+                    "bldg_b": "Block B",
+                    "bldg_c": "Block C",
+                    "bldg_d": "Block D",
+                    "bldg_e": "Block E",
+                }
+                convo_ref.set({
+                    "hostel_building": labels[selected],
+                    "step": "waiting_bucket"
+                }, merge=True)
+                send_bucket_buttons(phone)
+                return {"status": "ok"}
 
     except Exception as e:
         print("ERROR:", e)
@@ -418,54 +469,106 @@ async def receive(request: Request):
 # ================= MENUS =================
 
 def send_main_menu(phone):
-    send_buttons(phone, "Choose option:", [
+    send_buttons(phone, "👋 Welcome to Campus Companion!\n\nHow can we help you today?", [
         ("raise", "Raise Complaint"),
-        ("emergency", "Emergency Contacts")
+        ("emergency", "Emergency Contacts"),
     ])
 
 
 def send_bucket_buttons(phone):
-    send_buttons(phone, "Select Category:", [
-        ("hostel", "Hostel"),
-        ("acad_fac", "Acad & Fac"),
-        ("back_main", "⬅ Main Menu")
+    send_buttons(phone, "📂 Select complaint category:", [
+        ("bucket_mess", "Mess & Food"),
+        ("bucket_hostel", "Hostel"),
+        ("bucket_it", "IT & Infra"),
     ])
 
 
-def send_hostel_main(phone):
-    send_buttons(phone, "Hostel Category:", [
-        ("electrical", "Electrical"),
-        ("utilities", "Utilities"),
-        ("back_bucket", "⬅ Back")
+def send_hostel_menu(phone):
+    send_buttons(phone, "🏠 Hostel — Select type:", [
+        ("hostel_room", "Room Specific"),
+        ("hostel_common", "Common Utilities"),
+        ("back_bucket", "⬅ Back"),
     ])
 
 
-def send_electrical_options(phone):
-    send_buttons(phone, "Electrical Issue:", [
-        ("ac", "AC"),
-        ("geyser", "Geyser"),
-        ("back_hostel", "⬅ Back")
+def send_it_menu(phone):
+    send_buttons(phone, "💻 IT & Infrastructure:", [
+        ("cat_wifi", "WiFi"),
+        ("cat_rec_centre", "Rec Centre Issues"),
+        ("back_bucket", "⬅ Back"),
     ])
 
 
-def send_utilities_options(phone):
-    send_buttons(phone, "Utility Issue:", [
-        ("wifi", "WiFi"),
-        ("water_disp", "Water Disp"),
-        ("back_hostel", "⬅ Back")
-    ])
+def send_room_specific_list(phone):
+    # 2 options — list still works, keeps UI consistent
+    send_list(
+        phone,
+        header="Room Specific Issues",
+        body="Select the type of issue in your room:",
+        button_label="Select Issue",
+        sections=[
+            {
+                "title": "Room Issues",
+                "rows": [
+                    {"id": "cat_electrical_ac", "title": "Electrical / AC",     "description": "AC not working, wiring, switches"},
+                    {"id": "cat_furniture",     "title": "Furniture",           "description": "Bed, table, chair, cupboard"},
+                ],
+            }
+        ],
+    )
 
 
-def send_acad_fac(phone):
-    send_buttons(phone, "Select Type:", [
-        ("infra", "Infra Issues"),
-        ("mess", "Mess Issues"),
-        ("back_bucket", "⬅ Back")
-    ])
+def send_common_utilities_list(phone):
+    send_list(
+        phone,
+        header="Common Utilities",
+        body="Select the utility with an issue:",
+        button_label="Select Utility",
+        sections=[
+            {
+                "title": "Water & Appliances",
+                "rows": [
+                    {"id": "cat_water_disp", "title": "Water Dispenser",  "description": "Not working or water quality issue"},
+                    {"id": "cat_fridge",     "title": "Fridge",           "description": "Common area fridge issue"},
+                    {"id": "cat_oven",       "title": "Oven",             "description": "Oven not working or safety concern"},
+                    {"id": "cat_geyser",     "title": "Geyser",           "description": "No hot water or geyser fault"},
+                    {"id": "cat_vending",    "title": "Vending Machine",  "description": "Stuck, not dispensing, payment issue"},
+                    {"id": "cat_washing",    "title": "Washing Machine",  "description": "Not working or mid-cycle stop"},
+                ],
+            },
+            {
+                "title": "Infrastructure",
+                "rows": [
+                    {"id": "cat_elevator",   "title": "Elevator",         "description": "Not working, stuck, noise"},
+                    {"id": "cat_washroom",   "title": "Washroom Issues",  "description": "Flush, hygiene, cleaning, drain"},
+                ],
+            },
+        ],
+    )
+
+
+def send_building_list(phone):
+    send_list(
+        phone,
+        header="Hostel Building",
+        body="Which hostel block are you in?",
+        button_label="Select Block",
+        sections=[
+            {
+                "title": "Hostel Blocks",
+                "rows": [
+                    {"id": "bldg_a", "title": "Block A", "description": ""},
+                    {"id": "bldg_b", "title": "Block B", "description": ""},
+                    {"id": "bldg_c", "title": "Block C", "description": ""},
+                    {"id": "bldg_d", "title": "Block D", "description": ""},
+                    {"id": "bldg_e", "title": "Block E", "description": ""},
+                ],
+            }
+        ],
+    )
 
 
 def send_emergency_contacts(phone):
-
     send_text(phone, """
 🚨 Emergency Contacts
 
@@ -478,8 +581,9 @@ Type 'menu' anytime to return to main menu.
 """)
 
 
-def send_buttons(phone, text, buttons):
+# ================= WHATSAPP SENDERS =================
 
+def send_buttons(phone, text, buttons):
     data = {
         "messaging_product": "whatsapp",
         "to": phone,
@@ -492,73 +596,109 @@ def send_buttons(phone, text, buttons):
                     {"type": "reply", "reply": {"id": b[0], "title": b[1]}}
                     for b in buttons
                 ]
-            }
-        }
+            },
+        },
     }
+    send_whatsapp(data)
 
+
+def send_list(phone, header, body, button_label, sections):
+    """
+    Sends a WhatsApp List Message — supports up to 10 rows across sections.
+    Used when options exceed 3 (button limit).
+    """
+    data = {
+        "messaging_product": "whatsapp",
+        "to": phone,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "header": {"type": "text", "text": header},
+            "body": {"text": body},
+            "action": {
+                "button": button_label,
+                "sections": [
+                    {
+                        "title": s["title"],
+                        "rows": [
+                            {
+                                "id": r["id"],
+                                "title": r["title"],
+                                **({"description": r["description"]} if r.get("description") else {})
+                            }
+                            for r in s["rows"]
+                        ],
+                    }
+                    for s in sections
+                ],
+            },
+        },
+    }
+    send_whatsapp(data)
+
+
+def send_text(phone, text):
+    data = {
+        "messaging_product": "whatsapp",
+        "to": phone,
+        "type": "text",
+        "text": {"body": text},
+    }
     send_whatsapp(data)
 
 
 # ================= CREATE TICKET =================
 
 def complete_ticket(phone, priority):
-
     convo = db.collection("conversations").document(phone).get().to_dict() or {}
 
     ticket_id = str(uuid.uuid4())[:8]
     priority_emoji = {"High": "🔴", "Medium": "🟡", "Low": "🟢"}.get(priority, "🟢")
+    is_room = convo.get("is_room_specific", False)
 
     db.collection("tickets").document(ticket_id).set({
         "phone": phone,
-        "bucket": convo.get("bucket"),
-        "category": convo.get("category"),
-        "room": convo.get("room"),
-        "roll_number": convo.get("roll_number"),
-        "description": convo.get("description"),
+        "name": convo.get("name", ""),
+        "hostel_building": convo.get("hostel_building", ""),
+        "bucket": convo.get("bucket", ""),
+        "category": convo.get("category", ""),
+        "category_label": convo.get("category_label", ""),
+        "room": convo.get("room", "") if is_room else "",
+        "available_slot": convo.get("available_slot", "") if is_room else "",
+        "description": convo.get("description", ""),
         "priority": priority,
         "status": "Open",
         "assigned_to": "",
         "admin_comment": "",
         "created_at": datetime.utcnow(),
-        "updated_at": None
+        "updated_at": None,
     })
+
+    # Build confirmation — show slot only for room-specific issues
+    slot_line = f"🕐 Available: {convo.get('available_slot', '')}\n" if is_room else ""
 
     send_text(phone, f"""
 ✅ Complaint Registered
 
 Ticket ID: {ticket_id}
-Priority: {priority_emoji} {priority}
+Name: {convo.get('name', '')}
+Building: {convo.get('hostel_building', '')}
+Category: {convo.get('category_label', '')}
+{slot_line}Priority: {priority_emoji} {priority}
 
 Our team will review your issue and update you on WhatsApp automatically.
 """)
 
 
-# ================= SEND TEXT =================
-
-def send_text(phone, text):
-
-    data = {
-        "messaging_product": "whatsapp",
-        "to": phone,
-        "type": "text",
-        "text": {"body": text}
-    }
-
-    send_whatsapp(data)
-
-
 # ================= WHATSAPP API =================
 
 def send_whatsapp(data):
-
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
-
     headers = {
         "Authorization": f"Bearer {ACCESS_TOKEN}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
-
     response = requests.post(url, headers=headers, json=data)
-
     print("WHATSAPP STATUS:", response.status_code)
     print("WHATSAPP RESPONSE:", response.text)
+
