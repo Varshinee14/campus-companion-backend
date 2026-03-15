@@ -201,8 +201,20 @@ def update_ticket(data: TicketUpdate):
 
     phone = ticket_data.get("phone")
     status = update_data.get("status", ticket_data.get("status"))
-    technician = update_data.get("assigned_to", ticket_data.get("assigned_to"))
-    comment = update_data.get("admin_comment", ticket_data.get("admin_comment"))
+    technician_raw = update_data.get("assigned_to", ticket_data.get("assigned_to", "")).strip()
+    comment = update_data.get("admin_comment", ticket_data.get("admin_comment", ""))
+
+    # Map stored value to display name — handles both key and full name inputs
+    TECHNICIAN_DISPLAY = {
+        "tech01": "Tech 01 (AC)",
+        "tech02": "Tech 02 (Electrical)",
+        "tech03": "Tech 03 (Other)",
+        "tech04": "Tech 04 (Water Cooler)",
+        "tech05": "Tech 05 (Washing Machine)",
+        "tech06": "Tech 06 (Cleaning)",
+        "tech07": "Tech 07 (Wifi)",
+    }
+    technician = TECHNICIAN_DISPLAY.get(technician_raw.lower(), technician_raw)
 
     if status == "Closed":
         send_text(phone, f"""✅ Issue Resolved
@@ -213,13 +225,13 @@ Ticket ID: {data.ticket_id}
 
 If the issue persists, please raise a new complaint.""")
     else:
+        assigned_line = f"Assigned To: {technician}\n" if technician else ""
+        comment_line = f"\n{comment}" if comment else ""
         send_text(phone, f"""📢 Ticket Update
 
 Ticket ID: {data.ticket_id}
 Status: {status}
-Assigned To: {technician if technician else "Pending"}
-
-{comment if comment else ""}
+{assigned_line}{comment_line}
 
 You will receive further updates automatically.""")
 
@@ -329,7 +341,7 @@ async def receive(request: Request):
                 return {"status": "ok"}
 
             if selected == "back_bucket":
-                send_bucket_list(phone)
+                send_bucket_buttons(phone)
                 return {"status": "ok"}
 
             if selected == "back_hostel":
@@ -362,7 +374,7 @@ async def receive(request: Request):
                     "hostel_building": labels[selected],
                     "step": "waiting_bucket"
                 }, merge=True)
-                send_bucket_list(phone)
+                send_bucket_buttons(phone)
                 return {"status": "ok"}
 
             # ---- CATEGORY SELECTION (list) ----
@@ -495,21 +507,12 @@ def send_building_list(phone):
     )
 
 
-def send_bucket_list(phone):
-    send_list(
-        phone,
-        header="Complaint Category",
-        body="What is your complaint about?",
-        button_label="Select Category",
-        sections=[{
-            "title": "Categories",
-            "rows": [
-                {"id": "cat_mess",   "title": "Mess & Food",  "description": "Food quality, hygiene, timings"},
-                {"id": "cat_hostel", "title": "Hostel",       "description": "Room, utilities, common areas"},
-                {"id": "cat_it",     "title": "IT & Infra",   "description": "WiFi, Rec Centre"},
-            ],
-        }],
-    )
+def send_bucket_buttons(phone):
+    send_buttons(phone, "📂 What is your complaint about?", [
+        ("cat_mess",   "Mess & Food"),
+        ("cat_hostel", "Hostel"),
+        ("cat_it",     "IT & Infra"),
+    ])
 
 
 def send_hostel_menu(phone):
