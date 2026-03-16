@@ -383,7 +383,7 @@ async def receive(request: Request):
             elif selected == "cat_mess":
                 convo_ref.set({
                     "bucket": "Mess & Food",
-                    "category": "cat_mess",
+                    "category": "Mess & Food",
                     "category_label": "Mess & Food",
                     "is_room_specific": False,
                     "step": "waiting_description_direct"
@@ -414,13 +414,14 @@ async def receive(request: Request):
                 return {"status": "ok"}
 
             # ---- ROOM SPECIFIC (buttons — only 2 options) ----
-            elif selected in ["cat_electrical_ac", "cat_furniture"]:
+            elif selected in ["cat_ac", "cat_electrical", "cat_furniture"]:
                 labels = {
-                    "cat_electrical_ac": "Electrical / AC",
-                    "cat_furniture": "Furniture",
+                    "cat_ac":          "AC",
+                    "cat_electrical":  "Electrical",
+                    "cat_furniture":   "Furniture",
                 }
                 convo_ref.set({
-                    "category": selected,
+                    "category": labels[selected],
                     "category_label": labels[selected],
                     "is_room_specific": True,
                     "step": "waiting_room"
@@ -440,10 +441,10 @@ async def receive(request: Request):
                     "cat_vending":    "Vending Machine",
                     "cat_washing":    "Washing Machine",
                     "cat_elevator":   "Elevator",
-                    "cat_washroom":   "Washroom Issues",
+                    "cat_washroom":   "Washroom",
                 }
                 convo_ref.set({
-                    "category": selected,
+                    "category": labels[selected],
                     "category_label": labels[selected],
                     "is_room_specific": False,
                     "step": "waiting_description_direct"
@@ -454,7 +455,7 @@ async def receive(request: Request):
             # ---- IT / INFRA (buttons) ----
             elif selected == "cat_wifi":
                 convo_ref.set({
-                    "category": "cat_wifi",
+                    "category": "WiFi",
                     "category_label": "WiFi",
                     "is_room_specific": False,
                     "step": "waiting_description_direct"
@@ -464,7 +465,7 @@ async def receive(request: Request):
 
             elif selected == "cat_rec_centre":
                 convo_ref.set({
-                    "category": "cat_rec_centre",
+                    "category": "Rec Centre",
                     "category_label": "Rec Centre",
                     "is_room_specific": False,
                     "step": "waiting_description_direct"
@@ -524,11 +525,21 @@ def send_hostel_menu(phone):
 
 
 def send_room_specific_buttons(phone):
-    # Only 2 options — buttons are correct here
-    send_buttons(phone, "🚪 Room Specific — Select issue:", [
-        ("cat_electrical_ac", "Electrical / AC"),
-        ("cat_furniture",     "Furniture"),
-    ])
+    # 4 options — exceeds button limit, use list
+    send_list(
+        phone,
+        header="Room Specific Issues",
+        body="Select the type of issue in your room:",
+        button_label="Select Issue",
+        sections=[{
+            "title": "Room Issues",
+            "rows": [
+                {"id": "cat_ac",         "title": "AC",          "description": "Not cooling, noisy, leaking, not working"},
+                {"id": "cat_electrical",  "title": "Electrical",  "description": "Switches, wiring, sockets, power points"},
+                {"id": "cat_furniture",   "title": "Furniture",   "description": "Bed, table, chair, cupboard, fittings"},
+            ],
+        }],
+    )
 
 
 def send_common_utilities_list(phone):
@@ -654,7 +665,7 @@ def complete_ticket(phone, priority):
         "name": convo.get("name", ""),
         "hostel_building": convo.get("hostel_building", ""),
         "bucket": convo.get("bucket", ""),
-        "category": convo.get("category", ""),
+        "category": convo.get("category_label", convo.get("category", "")),
         "category_label": convo.get("category_label", ""),
         "room": convo.get("room", "") if is_room else "",
         "available_slot": convo.get("available_slot", "") if is_room else "",
