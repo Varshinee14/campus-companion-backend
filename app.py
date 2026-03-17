@@ -228,14 +228,13 @@ Ticket ID: {data.ticket_id}{comment_line}
 
 If the issue persists, please raise a new complaint.""")
         else:
-            assigned_line = f"Assigned To: {technician}\n" if technician else ""
-            comment_line = f"\n{comment}" if comment else ""
-            send_text(phone, f"""📢 Ticket Update
+            comment_line = f"\n📝 {comment}" if comment else ""
+            send_text(phone, f"""📢 Update on your complaint
 
 Ticket ID: {data.ticket_id}
-Status: {status}
-{assigned_line}{comment_line}
-You will receive further updates automatically.""")
+Status: {status}{comment_line}
+
+We’ll keep you posted on further updates.""")
 
     return {"message": "Ticket updated successfully", "updated_fields": update_data}
 
