@@ -149,11 +149,11 @@ def get_tickets():
         data = ticket.to_dict()
         result.append({
             "id": ticket.id,
+            "phone": data.get("phone", ""),
             "name": data.get("name", ""),
             "hostel_building": data.get("hostel_building", ""),
             "bucket": data.get("bucket", ""),
             "category": data.get("category", ""),
-            "category_label": data.get("category_label", ""),
             "room": data.get("room", ""),
             "available_slot": data.get("available_slot", ""),
             "description": data.get("description", ""),
@@ -202,9 +202,8 @@ def update_ticket(data: TicketUpdate):
     phone = ticket_data.get("phone")
     status = update_data.get("status", ticket_data.get("status"))
     technician_raw = update_data.get("assigned_to", ticket_data.get("assigned_to", "")).strip()
-    comment = update_data.get("admin_comment", ticket_data.get("admin_comment", ""))
+    comment = update_data.get("admin_comment", ticket_data.get("admin_comment", "")).strip()
 
-    # Map stored value to display name — handles both key and full name inputs
     TECHNICIAN_DISPLAY = {
         "tech01": "Tech 01 (AC)",
         "tech02": "Tech 02 (Electrical)",
@@ -216,23 +215,26 @@ def update_ticket(data: TicketUpdate):
     }
     technician = TECHNICIAN_DISPLAY.get(technician_raw.lower(), technician_raw)
 
-    if status == "Closed":
-        send_text(phone, f"""✅ Issue Resolved
+    # Only notify student if status or admin_comment changed
+    # Skip notification if only assigned_to was updated
+    should_notify = bool(data.status or data.admin_comment)
 
-Ticket ID: {data.ticket_id}
+    if should_notify and phone:
+        if status == "Closed":
+            comment_line = f"\n{comment}" if comment else "\nIssue resolved successfully."
+            send_text(phone, f"""✅ Issue Resolved
 
-{comment if comment else "Issue resolved successfully."}
+Ticket ID: {data.ticket_id}{comment_line}
 
 If the issue persists, please raise a new complaint.""")
-    else:
-        assigned_line = f"Assigned To: {technician}\n" if technician else ""
-        comment_line = f"\n{comment}" if comment else ""
-        send_text(phone, f"""📢 Ticket Update
+        else:
+            assigned_line = f"Assigned To: {technician}\n" if technician else ""
+            comment_line = f"\n{comment}" if comment else ""
+            send_text(phone, f"""📢 Ticket Update
 
 Ticket ID: {data.ticket_id}
 Status: {status}
 {assigned_line}{comment_line}
-
 You will receive further updates automatically.""")
 
     return {"message": "Ticket updated successfully", "updated_fields": update_data}
@@ -384,7 +386,6 @@ async def receive(request: Request):
                 convo_ref.set({
                     "bucket": "Mess & Food",
                     "category": "Mess & Food",
-                    "category_label": "Mess & Food",
                     "is_room_specific": False,
                     "step": "waiting_description_direct"
                 }, merge=True)
@@ -422,7 +423,6 @@ async def receive(request: Request):
                 }
                 convo_ref.set({
                     "category": labels[selected],
-                    "category_label": labels[selected],
                     "is_room_specific": True,
                     "step": "waiting_room"
                 }, merge=True)
@@ -445,7 +445,6 @@ async def receive(request: Request):
                 }
                 convo_ref.set({
                     "category": labels[selected],
-                    "category_label": labels[selected],
                     "is_room_specific": False,
                     "step": "waiting_description_direct"
                 }, merge=True)
@@ -456,7 +455,6 @@ async def receive(request: Request):
             elif selected == "cat_wifi":
                 convo_ref.set({
                     "category": "WiFi",
-                    "category_label": "WiFi",
                     "is_room_specific": False,
                     "step": "waiting_description_direct"
                 }, merge=True)
@@ -466,7 +464,6 @@ async def receive(request: Request):
             elif selected == "cat_rec_centre":
                 convo_ref.set({
                     "category": "Rec Centre",
-                    "category_label": "Rec Centre",
                     "is_room_specific": False,
                     "step": "waiting_description_direct"
                 }, merge=True)
@@ -665,8 +662,7 @@ def complete_ticket(phone, priority):
         "name": convo.get("name", ""),
         "hostel_building": convo.get("hostel_building", ""),
         "bucket": convo.get("bucket", ""),
-        "category": convo.get("category_label", convo.get("category", "")),
-        "category_label": convo.get("category_label", ""),
+        "category": convo.get("category", ""),
         "room": convo.get("room", "") if is_room else "",
         "available_slot": convo.get("available_slot", "") if is_room else "",
         "description": convo.get("description", ""),
