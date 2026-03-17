@@ -13,15 +13,11 @@ from datetime import datetime
 app = FastAPI()
 
 # ================= CORS =================
-# Set ALLOWED_ORIGINS on Render as comma-separated URLs
-# e.g. "https://your-dashboard.vercel.app,http://localhost:3000"
-ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -276,33 +272,9 @@ async def receive(request: Request):
         message = messages[0]
         phone = message["from"]
         msg_type = message["type"]
-        message_id = message.get("id", "")
-
-        # ── Deduplication ──────────────────────────────────────────────
-        # Meta retries failed webhooks up to 3x — same message_id each time
-        # Store processed IDs for 24hrs; skip if already seen
-        if message_id:
-            dedup_ref = db.collection("processed_messages").document(message_id)
-            if dedup_ref.get().exists:
-                print(f"DUPLICATE SKIPPED: {message_id}")
-                return {"status": "duplicate"}
-            dedup_ref.set({"processed_at": datetime.utcnow()})
 
         convo_ref = db.collection("conversations").document(phone)
         convo = convo_ref.get().to_dict() or {}
-
-        # ── Conversation TTL — reset abandoned flows after 1 hour ─────
-        last_updated = convo.get("last_updated")
-        if last_updated:
-            elapsed = (datetime.utcnow() - last_updated.replace(tzinfo=None)).total_seconds()
-            if elapsed > 3600:
-                print(f"CONVO EXPIRED ({int(elapsed)}s) — resetting {phone}")
-                convo_ref.delete()
-                convo = {}
-
-        # ── Input sanitiser — strip + cap length ──────────────────────
-        def clean(val, max_len):
-            return val.strip()[:max_len]
 
         # ================= TEXT INPUT =================
         if msg_type == "text":
@@ -317,33 +289,38 @@ async def receive(request: Request):
             step = convo.get("step")
 
             if step == "waiting_name":
-                convo_ref.set({"name": clean(text, 100), "step": "waiting_building", "last_updated": datetime.utcnow()}, merge=True)
+                convo_ref.set({"name": text, "step": "waiting_building"}, merge=True)
                 send_building_list(phone)
                 return {"status": "ok"}
 
             elif step == "waiting_room":
-                convo_ref.set({"room": clean(text, 20), "step": "waiting_slot", "last_updated": datetime.utcnow()}, merge=True)
+                convo_ref.set({"room": text, "step": "waiting_slot"}, merge=True)
                 send_text(phone, "📅 When are you available for resolution?\n\nEnter a date and time\n(e.g. Tomorrow 10am–12pm)")
                 return {"status": "ok"}
 
             elif step == "waiting_slot":
-                convo_ref.set({"available_slot": clean(text, 100), "step": "waiting_description", "last_updated": datetime.utcnow()}, merge=True)
+                convo_ref.set({"available_slot": text, "step": "waiting_description"}, merge=True)
                 send_text(phone, "📝 Briefly describe the issue:")
                 return {"status": "ok"}
 
+            elif step == "waiting_room_wifi":
+                convo_ref.set({"room": text, "step": "waiting_description_direct"}, merge=True)
+                send_text(phone, "📝 Describe the WiFi issue:")
+                return {"status": "ok"}
+
             elif step == "waiting_description":
-                description = clean(text, 500)
+                description = text
                 category = convo.get("category", "")
-                convo_ref.set({"description": description, "last_updated": datetime.utcnow()}, merge=True)
+                convo_ref.set({"description": description}, merge=True)
                 auto_priority = classify_priority(category, description)
                 complete_ticket(phone, auto_priority)
                 convo_ref.delete()
                 return {"status": "ok"}
 
             elif step == "waiting_description_direct":
-                description = clean(text, 500)
+                description = text
                 category = convo.get("category", "")
-                convo_ref.set({"description": description, "last_updated": datetime.utcnow()}, merge=True)
+                convo_ref.set({"description": description}, merge=True)
                 auto_priority = classify_priority(category, description)
                 complete_ticket(phone, auto_priority)
                 convo_ref.delete()
@@ -380,7 +357,7 @@ async def receive(request: Request):
             # ---- MAIN MENU ----
             if selected == "raise":
                 convo_ref.delete()
-                convo_ref.set({"step": "waiting_name", "last_updated": datetime.utcnow()})
+                convo_ref.set({"step": "waiting_name"})
                 send_text(phone, "👋 Let's get started!\n\nPlease enter your *full name*:")
                 return {"status": "ok"}
 
@@ -483,9 +460,9 @@ async def receive(request: Request):
                 convo_ref.set({
                     "category": "WiFi",
                     "is_room_specific": False,
-                    "step": "waiting_description_direct"
+                    "step": "waiting_room_wifi"
                 }, merge=True)
-                send_text(phone, "📶 Describe the WiFi issue:")
+                send_text(phone, "🚪 Enter your *room number*:")
                 return {"status": "ok"}
 
             elif selected == "cat_rec_centre":
@@ -690,7 +667,7 @@ def complete_ticket(phone, priority):
         "hostel_building": convo.get("hostel_building", ""),
         "bucket": convo.get("bucket", ""),
         "category": convo.get("category", ""),
-        "room": convo.get("room", "") if is_room else "",
+        "room": convo.get("room", ""),
         "available_slot": convo.get("available_slot", "") if is_room else "",
         "description": convo.get("description", ""),
         "priority": priority,
