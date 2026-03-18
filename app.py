@@ -135,9 +135,56 @@ def classify_priority(category: str, description: str) -> str:
             try:
                 return _call_hf_model(model, text)
             except Exception as e:
-                print(f"HF [{model}] failed: {e} — trying next")
+                print(f"HF [{model}] failed: {e} - trying next")
     print("Using keyword fallback")
     return _classify_keywords(category, description)
+
+
+# ================= INPUT VALIDATION =================
+import re
+
+def validate_name(text):
+    """Letters and spaces only, max 50 chars."""
+    text = text.strip()
+    if len(text) > 50:
+        return None, "Name must be under 50 characters. Please enter your name again:"
+    if not re.match(r"^[A-Za-z\s]+$", text):
+        return None, "Name should contain only letters and spaces (no numbers or symbols). Please enter your name again:"
+    return text, None
+
+def validate_room(text):
+    """Alphanumeric and hyphens only, max 5 chars. e.g. A-203, B305."""
+    text = text.strip().upper()
+    if len(text) > 5:
+        return None, "Room number must be 5 characters or less (e.g. A203, B305). Please enter your room number again:"
+    if not re.match(r"^[A-Za-z0-9\-]+$", text):
+        return None, "Room number should only contain letters, numbers, or a hyphen (e.g. A203, B-25). Please try again:"
+    return text, None
+
+def validate_slot(text):
+    """Any text, max 60 chars."""
+    text = text.strip()
+    if len(text) > 60:
+        return None, "Please keep your availability to under 60 characters (e.g. Tomorrow 10am-12pm). Try again:"
+    if len(text) < 3:
+        return None, "Please enter a valid date and time (e.g. Tomorrow 10am-12pm, Today after 6pm):"
+    return text, None
+
+def validate_description(text):
+    """Any text, max 500 chars."""
+    text = text.strip()
+    if len(text) > 500:
+        return None, "Description is too long. Please keep it under 500 characters and try again:"
+    if len(text) < 5:
+        return None, "Please describe the issue in a few words at least:"
+    return text, None
+
+def validate_ticket_id(text):
+    """Exactly 8 alphanumeric characters."""
+    text = text.strip().upper()
+    if not re.match(r"^[A-Za-z0-9]{8}$", text):
+        return None, "Ticket ID should be 8 characters (letters and numbers only, e.g. A3F9B2C1). Please try again:"
+    return text, None
 
 
 # ================= GET TICKETS =================
@@ -293,40 +340,71 @@ async def receive(request: Request):
             step = convo.get("step")
 
             if step == "waiting_name":
-                convo_ref.set({"name": text, "step": "waiting_building"}, merge=True)
+                clean, err = validate_name(text)
+                if err:
+                    send_text(phone, f"❌ {err}")
+                    return {"status": "ok"}
+                convo_ref.set({"name": clean, "step": "waiting_building"}, merge=True)
                 send_building_list(phone)
                 return {"status": "ok"}
 
             elif step == "waiting_room":
-                convo_ref.set({"room": text, "step": "waiting_slot"}, merge=True)
-                send_text(phone, "📅 When are you available for resolution?\n\nEnter a date and time\n(e.g. Tomorrow 10am–12pm)")
+                clean, err = validate_room(text)
+                if err:
+                    send_text(phone, f"❌ {err}")
+                    return {"status": "ok"}
+                convo_ref.set({"room": clean, "step": "waiting_slot"}, merge=True)
+                send_text(phone, "📅 When are you available for resolution?\n\nEnter a date and time\n(e.g. Tomorrow 10am-12pm)")
                 return {"status": "ok"}
 
             elif step == "waiting_slot":
-                convo_ref.set({"available_slot": text, "step": "waiting_description"}, merge=True)
+                clean, err = validate_slot(text)
+                if err:
+                    send_text(phone, f"❌ {err}")
+                    return {"status": "ok"}
+                convo_ref.set({"available_slot": clean, "step": "waiting_description"}, merge=True)
                 send_text(phone, "📝 Briefly describe the issue:")
                 return {"status": "ok"}
 
             elif step == "waiting_room_wifi":
-                convo_ref.set({"room": text, "step": "waiting_description_direct"}, merge=True)
+                clean, err = validate_room(text)
+                if err:
+                    send_text(phone, f"❌ {err}")
+                    return {"status": "ok"}
+                convo_ref.set({"room": clean, "step": "waiting_description_direct"}, merge=True)
                 send_text(phone, "📝 Describe the WiFi issue:")
                 return {"status": "ok"}
 
             elif step == "waiting_description":
-                description = text
+                clean, err = validate_description(text)
+                if err:
+                    send_text(phone, f"❌ {err}")
+                    return {"status": "ok"}
                 category = convo.get("category", "")
-                convo_ref.set({"description": description}, merge=True)
-                auto_priority = classify_priority(category, description)
+                convo_ref.set({"description": clean}, merge=True)
+                auto_priority = classify_priority(category, clean)
                 complete_ticket(phone, auto_priority)
                 convo_ref.delete()
                 return {"status": "ok"}
 
             elif step == "waiting_description_direct":
-                description = text
+                clean, err = validate_description(text)
+                if err:
+                    send_text(phone, f"❌ {err}")
+                    return {"status": "ok"}
                 category = convo.get("category", "")
-                convo_ref.set({"description": description}, merge=True)
-                auto_priority = classify_priority(category, description)
+                convo_ref.set({"description": clean}, merge=True)
+                auto_priority = classify_priority(category, clean)
                 complete_ticket(phone, auto_priority)
+                convo_ref.delete()
+                return {"status": "ok"}
+
+            elif step == "waiting_ticket_lookup":
+                clean, err = validate_ticket_id(text)
+                if err:
+                    send_text(phone, f"❌ {err}")
+                    return {"status": "ok"}
+                fetch_ticket_status(phone, clean)
                 convo_ref.delete()
                 return {"status": "ok"}
 
@@ -363,6 +441,12 @@ async def receive(request: Request):
                 convo_ref.delete()
                 convo_ref.set({"step": "waiting_name"})
                 send_text(phone, "👋 Let's get started!\n\nPlease enter your *full name*:")
+                return {"status": "ok"}
+
+            elif selected == "status_check":
+                convo_ref.delete()
+                convo_ref.set({"step": "waiting_ticket_lookup"})
+                send_text(phone, "🔍 Enter your *Ticket ID* to check status:\n\n(8-character code from your confirmation message, e.g. A3F9B2C1)")
                 return {"status": "ok"}
 
             elif selected == "emergency":
@@ -495,8 +579,9 @@ async def receive(request: Request):
 
 def send_main_menu(phone):
     send_buttons(phone, "👋 Welcome to Campus Companion!\n\nHow can we help you?", [
-        ("raise",     "Raise Complaint"),
-        ("emergency", "Emergency Contacts"),
+        ("raise",        "Raise Complaint"),
+        ("status_check", "Check Ticket Status"),
+        ("emergency",    "Emergency Contacts"),
     ])
 
 
@@ -701,6 +786,49 @@ def complete_ticket(phone, priority):
 
     # Ticket number only — no extra details shown to student
     send_text(phone, f"✅ Complaint registered!\n\nYour Ticket ID: *{ticket_id}*\n\nWe'll update you on WhatsApp once there's a status change.")
+
+
+# ================= TICKET STATUS LOOKUP =================
+
+def fetch_ticket_status(phone, ticket_id):
+    doc = db.collection("tickets").document(ticket_id).get()
+
+    if not doc.exists:
+        send_text(phone, f"❌ Ticket *{ticket_id}* not found.\n\nPlease check the ID and try again, or type 'menu' to go back.")
+        return
+
+    data = doc.to_dict()
+    status    = data.get("status", "Open")
+    category  = data.get("category", "")
+    comment   = data.get("admin_comment", "").strip()
+    assigned  = data.get("assigned_to", "").strip()
+    updated   = data.get("updated_at")
+
+    TECHNICIAN_DISPLAY = {
+        "tech01": "Tech 01 (AC)",
+        "tech02": "Tech 02 (Electrical)",
+        "tech03": "Tech 03 (Other)",
+        "tech04": "Tech 04 (Water Cooler)",
+        "tech05": "Tech 05 (Washing Machine)",
+        "tech06": "Tech 06 (Cleaning)",
+        "tech07": "Tech 07 (Wifi)",
+    }
+    technician = TECHNICIAN_DISPLAY.get(assigned.lower(), assigned) if assigned else ""
+
+    lines = [
+        f"📋 Ticket Status",
+        f"",
+        f"Ticket ID: {ticket_id}",
+        f"Category: {category}",
+        f"Status: {status}",
+    ]
+    if comment:
+        lines.append(f"Admin Note: {comment}")
+
+    lines.append("")
+    lines.append("Type 'menu' to go back to main menu.")
+
+    send_text(phone, "\n".join(lines))
 
 
 # ================= WHATSAPP API =================
