@@ -44,6 +44,7 @@ HF_TOKEN = os.environ.get("HF_TOKEN", "")
 HF_CANDIDATE_LABELS = [
     "fire, smoke, or safety emergency",
     "water leakage, flooding, or water supply failure",
+    "no water supply, dry tap, or water not coming at all",
     "water quality, contamination, or unsafe drinking water",
     "sewage, drain overflow, or toilet not working",
     "lift or elevator not working",
@@ -58,6 +59,7 @@ HF_CANDIDATE_LABELS = [
 LABEL_PRIORITY_MAP = {
     "fire, smoke, or safety emergency": "High",
     "water leakage, flooding, or water supply failure": "High",
+    "no water supply, dry tap, or water not coming at all": "High",
     "water quality, contamination, or unsafe drinking water": "High",
     "sewage, drain overflow, or toilet not working": "High",
     "lift or elevator not working": "High",
@@ -77,7 +79,9 @@ HF_MODELS = [
 KEYWORD_RULES = [
     ("High", [
         "fire", "smoke", "burning", "flame",
-        "flood", "flooding", "leaking", "water leak", "no water",
+        "flood", "flooding", "leaking", "water leak",
+        "no water", "water not coming", "tap is dry", "dry tap",
+        "no water supply", "completely dry", "not a drop", "water supply",
         "contaminated", "dirty water", "smell", "yellowish", "unsafe to drink",
         "flush", "flush not working", "toilet overflow", "sewage", "drain overflow",
         "lift stuck", "lift not working", "elevator stuck", "elevator not working",
@@ -383,18 +387,7 @@ async def receive(request: Request):
                 send_bucket_buttons(phone)
                 return {"status": "ok"}
 
-            # ---- CATEGORY SELECTION (list) ----
-
-            # Mess & Food — straight to description
-            elif selected == "cat_mess":
-                convo_ref.set({
-                    "bucket": "Mess & Food",
-                    "category": "Mess & Food",
-                    "is_room_specific": False,
-                    "step": "waiting_description_direct"
-                }, merge=True)
-                send_text(phone, "🍽️ Describe the Mess & Food issue:")
-                return {"status": "ok"}
+            # ---- CATEGORY SELECTION ----
 
             # Hostel — show sub-menu
             elif selected == "cat_hostel":
@@ -402,10 +395,38 @@ async def receive(request: Request):
                 send_hostel_menu(phone)
                 return {"status": "ok"}
 
-            # IT & Infra — show IT menu
-            elif selected == "cat_it":
-                convo_ref.set({"bucket": "IT & Infra"}, merge=True)
-                send_it_menu(phone)
+            # Others — show others list
+            elif selected == "cat_others":
+                convo_ref.set({"bucket": "Others"}, merge=True)
+                send_others_list(phone)
+                return {"status": "ok"}
+
+            # ---- OTHERS LIST ----
+            elif selected == "cat_mess":
+                convo_ref.set({
+                    "category": "Mess & Food",
+                    "is_room_specific": False,
+                    "step": "waiting_description_direct"
+                }, merge=True)
+                send_text(phone, "🍽️ Describe the Mess & Food issue:")
+                return {"status": "ok"}
+
+            elif selected == "cat_rec":
+                convo_ref.set({
+                    "category": "Rec Centre",
+                    "is_room_specific": False,
+                    "step": "waiting_description_direct"
+                }, merge=True)
+                send_text(phone, "🏋️ Describe the Rec Centre issue:")
+                return {"status": "ok"}
+
+            elif selected == "cat_general":
+                convo_ref.set({
+                    "category": "General",
+                    "is_room_specific": False,
+                    "step": "waiting_description_direct"
+                }, merge=True)
+                send_text(phone, "📝 Describe your complaint:")
                 return {"status": "ok"}
 
             # ---- HOSTEL SUB-MENU (buttons) ----
@@ -418,7 +439,7 @@ async def receive(request: Request):
                 send_common_utilities_list(phone)
                 return {"status": "ok"}
 
-            # ---- ROOM SPECIFIC (buttons — only 2 options) ----
+            # ---- ROOM SPECIFIC (list — 4 options) ----
             elif selected in ["cat_ac", "cat_electrical", "cat_furniture"]:
                 labels = {
                     "cat_ac":          "AC",
@@ -429,6 +450,15 @@ async def receive(request: Request):
                     "category": labels[selected],
                     "is_room_specific": True,
                     "step": "waiting_room"
+                }, merge=True)
+                send_text(phone, "🚪 Enter your *room number*:")
+                return {"status": "ok"}
+
+            elif selected == "cat_wifi":
+                convo_ref.set({
+                    "category": "WiFi",
+                    "is_room_specific": False,
+                    "step": "waiting_room_wifi"
                 }, merge=True)
                 send_text(phone, "🚪 Enter your *room number*:")
                 return {"status": "ok"}
@@ -453,25 +483,6 @@ async def receive(request: Request):
                     "step": "waiting_description_direct"
                 }, merge=True)
                 send_text(phone, f"📝 Describe the *{labels[selected]}* issue:")
-                return {"status": "ok"}
-
-            # ---- IT / INFRA (buttons) ----
-            elif selected == "cat_wifi":
-                convo_ref.set({
-                    "category": "WiFi",
-                    "is_room_specific": False,
-                    "step": "waiting_room_wifi"
-                }, merge=True)
-                send_text(phone, "🚪 Enter your *room number*:")
-                return {"status": "ok"}
-
-            elif selected == "cat_rec_centre":
-                convo_ref.set({
-                    "category": "Rec Centre",
-                    "is_room_specific": False,
-                    "step": "waiting_description_direct"
-                }, merge=True)
-                send_text(phone, "🏋️ Describe the Rec Centre issue:")
                 return {"status": "ok"}
 
     except Exception as e:
@@ -511,9 +522,8 @@ def send_building_list(phone):
 
 def send_bucket_buttons(phone):
     send_buttons(phone, "📂 What is your complaint about?", [
-        ("cat_mess",   "Mess & Food"),
         ("cat_hostel", "Hostel"),
-        ("cat_it",     "IT & Infra"),
+        ("cat_others", "Others"),
     ])
 
 
@@ -526,7 +536,7 @@ def send_hostel_menu(phone):
 
 
 def send_room_specific_buttons(phone):
-    # 4 options — exceeds button limit, use list
+    # 4 options — use list
     send_list(
         phone,
         header="Room Specific Issues",
@@ -536,8 +546,27 @@ def send_room_specific_buttons(phone):
             "title": "Room Issues",
             "rows": [
                 {"id": "cat_ac",         "title": "AC",          "description": "Not cooling, noisy, leaking, not working"},
-                {"id": "cat_electrical",  "title": "Electrical",  "description": "Switches, wiring, sockets, power points"},
-                {"id": "cat_furniture",   "title": "Furniture",   "description": "Bed, table, chair, cupboard, fittings"},
+                {"id": "cat_electrical", "title": "Electrical",  "description": "Switches, wiring, sockets, power points"},
+                {"id": "cat_furniture",  "title": "Furniture",   "description": "Bed, table, chair, cupboard, fittings"},
+                {"id": "cat_wifi",       "title": "WiFi",        "description": "Slow, not connecting, no internet"},
+            ],
+        }],
+    )
+
+
+def send_others_list(phone):
+    # Others bucket — Mess & Food, Rec Centre, Other/General
+    send_list(
+        phone,
+        header="Others",
+        body="Select the type of complaint:",
+        button_label="Select Type",
+        sections=[{
+            "title": "Other Complaints",
+            "rows": [
+                {"id": "cat_mess",    "title": "Mess & Food",    "description": "Food quality, hygiene, timings, menu"},
+                {"id": "cat_rec",     "title": "Rec Centre",     "description": "Equipment, cleanliness, access"},
+                {"id": "cat_general", "title": "Other / General","description": "Any other complaint not listed above"},
             ],
         }],
     )
@@ -571,14 +600,6 @@ def send_common_utilities_list(phone):
             },
         ],
     )
-
-
-def send_it_menu(phone):
-    send_buttons(phone, "💻 IT & Infrastructure:", [
-        ("cat_wifi",       "WiFi"),
-        ("cat_rec_centre", "Rec Centre Issues"),
-        ("back_bucket",    "⬅ Back"),
-    ])
 
 
 def send_emergency_contacts(phone):
