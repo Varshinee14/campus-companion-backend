@@ -180,10 +180,10 @@ def validate_description(text):
     return text, None
 
 def validate_ticket_id(text):
-    """Exactly 8 alphanumeric characters."""
-    text = text.strip().upper()
+    """8 alphanumeric characters, preserve original case for Firestore lookup."""
+    text = text.strip()
     if not re.match(r"^[A-Za-z0-9]{8}$", text):
-        return None, "Ticket ID should be 8 characters (letters and numbers only, e.g. A3F9B2C1). Please try again:"
+        return None, "Ticket ID should be 8 characters (letters and numbers only, e.g. a3f9b2c1). Please try again:"
     return text, None
 
 
