@@ -353,8 +353,13 @@ async def receive(request: Request):
                 if err:
                     send_text(phone, f"❌ {err}")
                     return {"status": "ok"}
-                convo_ref.set({"room": clean, "step": "waiting_slot"}, merge=True)
-                send_text(phone, "📅 When are you available for resolution?\n\nEnter a date and time\n(e.g. Tomorrow 10am-12pm)")
+                # Room Specific (AC/Electrical/Furniture) goes to slot, all others go direct to description
+                if convo.get("is_room_specific", False):
+                    convo_ref.set({"room": clean, "step": "waiting_slot"}, merge=True)
+                    send_text(phone, "📅 When are you available for resolution?\n\nEnter a date and time\n(e.g. Tomorrow 10am-12pm)")
+                else:
+                    convo_ref.set({"room": clean, "step": "waiting_description_direct"}, merge=True)
+                    send_text(phone, "📝 Briefly describe the issue:")
                 return {"status": "ok"}
 
             elif step == "waiting_slot":
@@ -364,15 +369,6 @@ async def receive(request: Request):
                     return {"status": "ok"}
                 convo_ref.set({"available_slot": clean, "step": "waiting_description"}, merge=True)
                 send_text(phone, "📝 Briefly describe the issue:")
-                return {"status": "ok"}
-
-            elif step == "waiting_room_wifi":
-                clean, err = validate_room(text)
-                if err:
-                    send_text(phone, f"❌ {err}")
-                    return {"status": "ok"}
-                convo_ref.set({"room": clean, "step": "waiting_description_direct"}, merge=True)
-                send_text(phone, "📝 Describe the WiFi issue:")
                 return {"status": "ok"}
 
             elif step == "waiting_description":
@@ -542,7 +538,7 @@ async def receive(request: Request):
                 convo_ref.set({
                     "category": "WiFi",
                     "is_room_specific": False,
-                    "step": "waiting_room_wifi"
+                    "step": "waiting_room"
                 }, merge=True)
                 send_text(phone, "🚪 Enter your *room number*:")
                 return {"status": "ok"}
@@ -564,9 +560,9 @@ async def receive(request: Request):
                 convo_ref.set({
                     "category": labels[selected],
                     "is_room_specific": False,
-                    "step": "waiting_description_direct"
+                    "step": "waiting_room"
                 }, merge=True)
-                send_text(phone, f"📝 Describe the *{labels[selected]}* issue:")
+                send_text(phone, "🚪 Enter your *room number*:")
                 return {"status": "ok"}
 
     except Exception as e:
