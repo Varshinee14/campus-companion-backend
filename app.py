@@ -331,7 +331,14 @@ We’ll keep you posted on further updates.""")
 
     # Notify technician if assigned_to changed
     if data.assigned_to and data.assigned_to.strip():
-        tech_phone = get_technician_phone(data.assigned_to.strip())
+        tech_id_lookup = data.assigned_to.strip()
+        print(f"TECH LOOKUP: assigned_to='{tech_id_lookup}' lower='{tech_id_lookup.lower()}'")
+        tech_doc = db.collection("technicians").document(tech_id_lookup.lower()).get()
+        print(f"TECH DOC EXISTS: {tech_doc.exists}")
+        if tech_doc.exists:
+            print(f"TECH DOC DATA: {tech_doc.to_dict()}")
+        tech_phone = get_technician_phone(tech_id_lookup)
+        print(f"TECH PHONE RESULT: '{tech_phone}'")
         if tech_phone:
             slot_line = f"\nAvailable: {ticket_data.get('available_slot')}" if ticket_data.get('available_slot') else ""
             send_text(tech_phone, f"""🔧 New Ticket Assigned to You
@@ -344,6 +351,8 @@ Room: {ticket_data.get('room', '')}{slot_line}
 Issue: {ticket_data.get('description', '')}
 
 Please proceed at the earliest.""")
+        else:
+            print(f"TECH PHONE EMPTY: no message sent for '{tech_id_lookup}'")
     return {"message": "Ticket updated successfully", "updated_fields": update_data}
 
 
