@@ -189,6 +189,20 @@ def validate_ticket_id(text):
 
 # ================= TECHNICIAN HELPERS =================
 
+def is_technician_phone(phone: str) -> bool:
+    """Check if a phone number belongs to any technician in Firestore."""
+    try:
+        docs = db.collection("technicians").stream()
+        for doc in docs:
+            d = doc.to_dict()
+            stored = (d.get("phone") or d.get("Phone") or "").strip()
+            if stored and stored == phone.strip():
+                return True
+    except Exception as e:
+        print(f"TECH PHONE CHECK ERROR: {e}")
+    return False
+
+
 def get_technician_name(tech_id: str) -> str:
     if not tech_id:
         return ""
@@ -391,6 +405,13 @@ async def receive(request: Request):
         message = messages[0]
         phone = message["from"]
         msg_type = message["type"]
+
+        # ---- TECHNICIAN GUARD ----
+        # If message is from a known technician number, ignore silently
+        # Technicians receive notifications but cannot use the bot
+        if is_technician_phone(phone):
+            print(f"TECHNICIAN MESSAGE IGNORED: {phone}")
+            return {"status": "ok"}
 
         convo_ref = db.collection("conversations").document(phone)
         convo = convo_ref.get().to_dict() or {}
