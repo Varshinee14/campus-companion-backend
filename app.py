@@ -187,6 +187,56 @@ def validate_ticket_id(text):
     return text, None
 
 
+# ================= TECHNICIAN HELPERS =================
+
+def get_technician_name(tech_id: str) -> str:
+    if not tech_id:
+        return ""
+    doc = db.collection("technicians").document(tech_id.lower()).get()
+    if doc.exists:
+        return doc.to_dict().get("name", tech_id)
+    return tech_id
+
+def get_technician_phone(tech_id: str) -> str:
+    if not tech_id:
+        return ""
+    doc = db.collection("technicians").document(tech_id.lower()).get()
+    if doc.exists:
+        return doc.to_dict().get("phone", "")
+    return ""
+
+
+# ================= TECHNICIAN ENDPOINTS =================
+@app.get("/technicians")
+def get_technicians():
+    docs = db.collection("technicians").stream()
+    return [{"id": d.id, **d.to_dict()} for d in docs]
+
+
+class TechnicianSave(BaseModel):
+    tech_id: str
+    name: str
+    phone: str
+    category: str | None = None
+
+
+@app.post("/technicians")
+def save_technician(data: TechnicianSave):
+    db.collection("technicians").document(data.tech_id.lower()).set({
+        "name": data.name,
+        "phone": data.phone,
+        "category": data.category or "",
+        "updated_at": datetime.utcnow(),
+    })
+    return {"message": "Technician saved"}
+
+
+@app.delete("/technicians/{tech_id}")
+def delete_technician(tech_id: str):
+    db.collection("technicians").document(tech_id.lower()).delete()
+    return {"message": "Technician deleted"}
+
+
 # ================= GET TICKETS =================
 @app.get("/tickets")
 def get_tickets():
@@ -255,19 +305,10 @@ def update_ticket(data: TicketUpdate):
     technician_raw = update_data.get("assigned_to", ticket_data.get("assigned_to", "")).strip()
     comment = update_data.get("admin_comment", ticket_data.get("admin_comment", "")).strip()
 
-    TECHNICIAN_DISPLAY = {
-        "tech01": "Tech 01 (AC)",
-        "tech02": "Tech 02 (Electrical)",
-        "tech03": "Tech 03 (Other)",
-        "tech04": "Tech 04 (Water Cooler)",
-        "tech05": "Tech 05 (Washing Machine)",
-        "tech06": "Tech 06 (Cleaning)",
-        "tech07": "Tech 07 (Wifi)",
-    }
-    technician = TECHNICIAN_DISPLAY.get(technician_raw.lower(), technician_raw)
+    technician = get_technician_name(technician_raw)
 
-    # Only notify student if status or admin_comment changed
-    # Skip notification if only assigned_to was updated
+    # Notify student if status or admin_comment changed
+
     should_notify = bool(data.status or data.admin_comment)
 
     if should_notify and phone:
@@ -287,6 +328,22 @@ Status: {status}{comment_line}
 
 We’ll keep you posted on further updates.""")
 
+
+    # Notify technician if assigned_to changed
+    if data.assigned_to and data.assigned_to.strip():
+        tech_phone = get_technician_phone(data.assigned_to.strip())
+        if tech_phone:
+            slot_line = f"\nAvailable: {ticket_data.get('available_slot')}" if ticket_data.get('available_slot') else ""
+            send_text(tech_phone, f"""🔧 New Ticket Assigned to You
+
+Ticket ID: {data.ticket_id}
+Category: {ticket_data.get('category', '')}
+Building: {ticket_data.get('hostel_building', '')}
+Room: {ticket_data.get('room', '')}{slot_line}
+
+Issue: {ticket_data.get('description', '')}
+
+Please proceed at the earliest.""")
     return {"message": "Ticket updated successfully", "updated_fields": update_data}
 
 
@@ -800,16 +857,7 @@ def fetch_ticket_status(phone, ticket_id):
     assigned  = data.get("assigned_to", "").strip()
     updated   = data.get("updated_at")
 
-    TECHNICIAN_DISPLAY = {
-        "tech01": "Tech 01 (AC)",
-        "tech02": "Tech 02 (Electrical)",
-        "tech03": "Tech 03 (Other)",
-        "tech04": "Tech 04 (Water Cooler)",
-        "tech05": "Tech 05 (Washing Machine)",
-        "tech06": "Tech 06 (Cleaning)",
-        "tech07": "Tech 07 (Wifi)",
-    }
-    technician = TECHNICIAN_DISPLAY.get(assigned.lower(), assigned) if assigned else ""
+    technician = get_technician_name(assigned) if assigned else ""
 
     lines = [
         f"📋 Ticket Status",
