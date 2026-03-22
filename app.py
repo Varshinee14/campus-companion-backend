@@ -194,7 +194,8 @@ def get_technician_name(tech_id: str) -> str:
         return ""
     doc = db.collection("technicians").document(tech_id.lower()).get()
     if doc.exists:
-        return doc.to_dict().get("name", tech_id)
+        d = doc.to_dict()
+        return d.get("name") or d.get("Name") or tech_id
     return tech_id
 
 def get_technician_phone(tech_id: str) -> str:
@@ -202,7 +203,8 @@ def get_technician_phone(tech_id: str) -> str:
         return ""
     doc = db.collection("technicians").document(tech_id.lower()).get()
     if doc.exists:
-        return doc.to_dict().get("phone", "")
+        d = doc.to_dict()
+        return d.get("phone") or d.get("Phone") or ""
     return ""
 
 
